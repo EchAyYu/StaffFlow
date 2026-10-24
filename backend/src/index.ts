@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { pool, isNeonConfigured } from './db';
+import { isNeonConfigured, pool } from './db';
 import { runStartupMigrations } from './migrations/schemaMigration';
 import { authRouter } from './routes/auth.routes';
 import { branchesRouter } from './routes/branches.routes';
@@ -21,26 +21,31 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Startup Schema Sync & Password Migrations
-if (isNeonConfigured) {
+// Startup Schema Sync & Password Migrations (chỉ chạy khi server khởi động ở dev/local, tránh lock DB trên serverless cold start)
+if (isNeonConfigured && !process.env.VERCEL) {
   runStartupMigrations(pool).catch((err) => {
     console.warn('[Startup Migration Warning]:', err.message);
   });
 }
 
-// Route Registrations
-app.use('/api/auth', authRouter);
-app.use('/api/branches', branchesRouter);
-app.use('/api/roles', rolesRouter);
-app.use('/api/line-configs', lineConfigsRouter);
-app.use('/api/line-requirements', lineRequirementsRouter);
-app.use('/api/users', usersRouter);
-app.use('/api/availability', availabilityRouter);
-app.use('/api/schedules', schedulesRouter);
-app.use('/api/shift-requests', shiftRequestsRouter);
-app.use('/api', systemRouter);
+// Router gom toàn bộ API routes
+const apiRouter = express.Router();
+apiRouter.use('/auth', authRouter);
+apiRouter.use('/branches', branchesRouter);
+apiRouter.use('/roles', rolesRouter);
+apiRouter.use('/line-configs', lineConfigsRouter);
+apiRouter.use('/line-requirements', lineRequirementsRouter);
+apiRouter.use('/users', usersRouter);
+apiRouter.use('/availability', availabilityRouter);
+apiRouter.use('/schedules', schedulesRouter);
+apiRouter.use('/shift-requests', shiftRequestsRouter);
+apiRouter.use('/', systemRouter);
 
-// Start Server
+// Đăng ký ở cả '/api' và '/' để tương thích cả localhost lẫn Vercel Serverless (nếu route prefix bị strip)
+app.use('/api', apiRouter);
+app.use('/', apiRouter);
+
+// Start Server khi chạy dev/local
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`====================================================`);
@@ -50,4 +55,5 @@ if (!process.env.VERCEL) {
   });
 }
 
+// Export cho Vercel Serverless Function
 export default app;
