@@ -3,7 +3,7 @@
  * Kiểm thử tự động từ Logic Nghiệp vụ OOP, Ràng buộc Xếp ca, Quy trình Đổi/Bán ca, đến Bảng lương & Mã hoá Auth.
  */
 
-import { hashPassword, comparePassword, isBcryptHash } from './auth.js';
+import { hashPassword, comparePassword, isBcryptHash } from './auth';
 
 // Import domain entities & utilities directly
 // We recreate or import the exact algorithms to run automated verification

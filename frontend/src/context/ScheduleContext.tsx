@@ -243,9 +243,12 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         const parsed: Employee[] = JSON.parse(saved);
         // Dọn dẹp dữ liệu rác cũ: Giữ lại Admin Tổng và các nhân sự thuộc các chi nhánh thực tế đang tồn tại
         const branchIds = new Set(branches.map((b) => b.id));
-        const cleanList = parsed.filter(
-          (e) => e.roleType === 'super_admin' || e.id === 'USR-SUPER-01' || (e.branchId && branchIds.has(e.branchId))
-        );
+        const cleanList =
+          branchIds.size > 0
+            ? parsed.filter(
+                (e) => e.roleType === 'super_admin' || e.id === 'USR-SUPER-01' || (e.branchId && branchIds.has(e.branchId))
+              )
+            : parsed;
         return cleanList.length > 0 ? cleanList : MOCK_EMPLOYEES;
       }
       return MOCK_EMPLOYEES;
@@ -696,7 +699,25 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
             data.branches.forEach((b: Branch) => remoteMap.set(b.id, b));
             const merged = data.branches.slice();
             prev.forEach((p) => {
-              if (!remoteMap.has(p.id)) merged.push(p);
+              if (!remoteMap.has(p.id)) {
+                merged.push(p);
+                branchService
+                  .create({
+                    id: p.id,
+                    code: p.code,
+                    name: p.name,
+                    address: p.address,
+                    phone: p.phone,
+                    standard_monthly_hours: p.standardMonthlyHours,
+                    max_fulltime_off_days: p.maxFulltimeOffDays,
+                    max_parttime_off_days: p.maxParttimeOffDays,
+                    admin_name: p.adminName,
+                    admin_username: p.adminUsername,
+                    admin_password: p.adminPassword || '123456',
+                    admin_email: p.adminEmail,
+                  })
+                  .catch(() => {});
+              }
             });
             return merged;
           });

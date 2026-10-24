@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { pool, isNeonConfigured } from '../db.js';
-import { hashPassword } from '../auth.js';
+import { pool, isNeonConfigured } from '../db';
+import { hashPassword } from '../auth';
 
 export const usersRouter = Router();
 
@@ -107,6 +107,8 @@ usersRouter.post('/', async (req, res) => {
       const rawPass = password || '123456';
       const hashedPass = await hashPassword(rawPass);
       const finalUsername = (username || (email ? email.split('@')[0] : employeeCode) || userId).toLowerCase().trim();
+      const resolvedFullName = (fullName || req.body.name || finalUsername || 'Nhân Viên').trim();
+      const resolvedEmail = (email && String(email).trim()) ? String(email).trim() : `${finalUsername}@staffflow.local`;
       const targetRoleType = roleType || 'employee';
 
       let validBranchId = targetRoleType === 'super_admin' ? null : (branchId || null);
@@ -154,7 +156,7 @@ usersRouter.post('/', async (req, res) => {
           RETURNING *
         `;
         userRes = await client.query(updateQuery, [
-          validBranchId, employeeCode || null, fullName, email || null, finalUsername, hashedPass,
+          validBranchId, employeeCode || null, resolvedFullName, resolvedEmail, finalUsername, hashedPass,
           targetRoleType, gender || 'male', dob || null, joinedDate || new Date(),
           employmentType || 'full_time', phone || null, baseHourlyRate || 30000,
           targetId
@@ -169,7 +171,7 @@ usersRouter.post('/', async (req, res) => {
           RETURNING *
         `;
         userRes = await client.query(insertUser, [
-          userId, validBranchId, employeeCode || userId, fullName, email || null, finalUsername, hashedPass,
+          userId, validBranchId, employeeCode || userId, resolvedFullName, resolvedEmail, finalUsername, hashedPass,
           targetRoleType, gender || 'male', dob || null, joinedDate || new Date(),
           employmentType || 'full_time', phone || null, baseHourlyRate || 30000
         ]);
@@ -215,6 +217,8 @@ usersRouter.put('/:id', async (req, res) => {
       }
 
       const finalUsername = username ? username.toLowerCase().trim() : (email ? email.split('@')[0] : (employeeCode || id));
+      const resolvedFullName = (fullName || req.body.name || null);
+      const resolvedEmail = (email && String(email).trim()) ? String(email).trim() : null;
       const targetRoleType = roleType || (id === 'USR-SUPER-01' ? 'super_admin' : 'employee');
 
       let validBranchId = targetRoleType === 'super_admin' ? null : (branchId || null);
@@ -263,7 +267,7 @@ usersRouter.put('/:id', async (req, res) => {
           RETURNING *
         `;
         result = await client.query(updateUser, [
-          fullName, email, finalUsername, phone, employmentType, baseHourlyRate,
+          resolvedFullName, resolvedEmail, finalUsername, phone, employmentType, baseHourlyRate,
           hashedPass, validBranchId, employeeCode, gender, dob || null, joinedDate || null,
           targetRoleType, status || null, targetId
         ]);
@@ -278,7 +282,7 @@ usersRouter.put('/:id', async (req, res) => {
           RETURNING *
         `;
         result = await client.query(insertUser, [
-          id, validBranchId, employeeCode || id, fullName || 'Nhân Viên', email || null, finalUsername, hashedPass || await hashPassword('123456'),
+          id, validBranchId, employeeCode || id, resolvedFullName || 'Nhân Viên', resolvedEmail || `${finalUsername}@staffflow.local`, finalUsername, hashedPass || await hashPassword('123456'),
           targetRoleType, gender || 'male', dob || null, joinedDate || new Date(),
           employmentType || 'full_time', phone || null, baseHourlyRate || 30000, status || 'active'
         ]);

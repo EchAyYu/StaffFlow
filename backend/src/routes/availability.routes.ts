@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { pool, isNeonConfigured } from '../db.js';
+import { pool, isNeonConfigured } from '../db';
 
 export const availabilityRouter = Router();
 

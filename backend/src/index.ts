@@ -1,16 +1,16 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { pool, isNeonConfigured } from './db.js';
-import { runStartupMigrations } from './migrations/schemaMigration.js';
-import { authRouter } from './routes/auth.routes.js';
-import { branchesRouter } from './routes/branches.routes.js';
-import { rolesRouter, lineConfigsRouter, lineRequirementsRouter } from './routes/rolesLines.routes.js';
-import { usersRouter } from './routes/users.routes.js';
-import { availabilityRouter } from './routes/availability.routes.js';
-import { schedulesRouter } from './routes/schedules.routes.js';
-import { shiftRequestsRouter } from './routes/shiftRequests.routes.js';
-import { systemRouter } from './routes/system.routes.js';
+import { pool, isNeonConfigured } from './db';
+import { runStartupMigrations } from './migrations/schemaMigration';
+import { authRouter } from './routes/auth.routes';
+import { branchesRouter } from './routes/branches.routes';
+import { rolesRouter, lineConfigsRouter, lineRequirementsRouter } from './routes/rolesLines.routes';
+import { usersRouter } from './routes/users.routes';
+import { availabilityRouter } from './routes/availability.routes';
+import { schedulesRouter } from './routes/schedules.routes';
+import { shiftRequestsRouter } from './routes/shiftRequests.routes';
+import { systemRouter } from './routes/system.routes';
 
 dotenv.config();
 

@@ -1,10 +1,11 @@
 import { Pool } from 'pg';
-import { migratePlaintextPasswords } from '../auth.js';
+import { migratePlaintextPasswords } from '../auth';
 
 export async function runStartupMigrations(pool: Pool): Promise<void> {
   try {
     await pool.query(`
       ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(100);
+      ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
       ALTER TABLE users DROP CONSTRAINT IF EXISTS users_employee_code_key;
       ALTER TABLE users DROP CONSTRAINT IF EXISTS users_email_key;
 

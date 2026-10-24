@@ -1,4 +1,4 @@
-import { pool, isNeonConfigured } from './db.js';
+import { pool, isNeonConfigured } from './db';
 
 async function migrateAndClean() {
   if (!isNeonConfigured) {

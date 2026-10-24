@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { pool, isNeonConfigured } from '../db.js';
-import { hashPassword } from '../auth.js';
+import { pool, isNeonConfigured } from '../db';
+import { hashPassword } from '../auth';
 
 export const branchesRouter = Router();
 

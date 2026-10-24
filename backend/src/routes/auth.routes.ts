@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { pool, isNeonConfigured } from '../db.js';
-import { hashPassword, comparePassword, isBcryptHash } from '../auth.js';
+import { pool, isNeonConfigured } from '../db';
+import { hashPassword, comparePassword, isBcryptHash } from '../auth';
 
 export const authRouter = Router();
 

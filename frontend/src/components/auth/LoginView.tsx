@@ -104,6 +104,7 @@ export const LoginView: React.FC = () => {
     userService
       .create({
         ...found,
+        fullName: found.name,
         password: enteredPassword,
       })
       .catch(() => {});

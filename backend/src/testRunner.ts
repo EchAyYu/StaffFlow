@@ -1,4 +1,4 @@
-import { pool, isNeonConfigured } from './db.js';
+import { pool, isNeonConfigured } from './db';
 
 interface TestResult {
   name: string;

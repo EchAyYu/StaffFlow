@@ -3,9 +3,16 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const { Pool } = pg;
+const Pool = pg.Pool || (pg as any).default?.Pool;
 
-const connectionString = process.env.DATABASE_URL;
+const DEFAULT_NEON_URL =
+  'postgresql://neondb_owner:npg_jWuqeTOpZ51I@ep-tiny-firefly-a17jusfx-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require';
+
+const rawEnvUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+const connectionString =
+  rawEnvUrl && !rawEnvUrl.includes('YOUR_PASSWORD_HERE') && rawEnvUrl.startsWith('postgres')
+    ? rawEnvUrl
+    : DEFAULT_NEON_URL;
 
 export const isNeonConfigured = Boolean(
   connectionString &&
