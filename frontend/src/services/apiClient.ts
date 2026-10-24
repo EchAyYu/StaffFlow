@@ -1,5 +1,11 @@
+const env = (import.meta as unknown as { env?: { VITE_API_URL?: string; DEV?: boolean } }).env;
+
 export const API_BASE_URL: string =
-  (import.meta as unknown as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL || 'http://localhost:5000';
+  typeof env?.VITE_API_URL === 'string'
+    ? env.VITE_API_URL
+    : env?.DEV
+      ? 'http://localhost:5000'
+      : '';
 
 export interface ApiResponse<T = any> {
   data: T;

@@ -35,9 +35,12 @@ app.use('/api/schedules', schedulesRouter);
 app.use('/api/shift-requests', shiftRequestsRouter);
 app.use('/api', systemRouter);
 // Start Server
-app.listen(PORT, () => {
-    console.log(`====================================================`);
-    console.log(`🚀 StaffFlow Node.js Backend Server chạy tại: http://localhost:${PORT}`);
-    console.log(`📡 Neon PostgreSQL: ${isNeonConfigured ? 'ĐÃ KẾT NỐI VÀ HOẠT ĐỘNG' : 'Sử dụng Mock State'}`);
-    console.log(`====================================================`);
-});
+if (!process.env.VERCEL) {
+    app.listen(PORT, () => {
+        console.log(`====================================================`);
+        console.log(`🚀 StaffFlow Node.js Backend Server chạy tại: http://localhost:${PORT}`);
+        console.log(`📡 Neon PostgreSQL: ${isNeonConfigured ? 'ĐÃ KẾT NỐI VÀ HOẠT ĐỘNG' : 'Sử dụng Mock State'}`);
+        console.log(`====================================================`);
+    });
+}
+export default app;
