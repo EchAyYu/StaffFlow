@@ -2,9 +2,7 @@ import React, { useState } from 'react';
 import { useSchedule } from '../../context/ScheduleContext';
 import { Lock, Mail, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { Button } from '../common/Button';
-
-const API_BASE_URL =
-  (import.meta as unknown as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL || 'http://localhost:5000';
+import { authService, userService } from '../../services';
 
 export const LoginView: React.FC = () => {
   const { loginAs, loginWithUser, employees, branches, switchRoleType, switchBranch, addToast } = useSchedule();
@@ -31,38 +29,29 @@ export const LoginView: React.FC = () => {
 
     // 1. ƯU TIÊN: Đăng nhập an toàn qua Backend API + Neon PostgreSQL (Xác thực Bcrypt)
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: query, password: enteredPassword }),
-      });
-
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.success && data.user) {
-          loginWithUser(data.user, data.branch);
-          setIsLoading(false);
-          addToast(
-            'success',
-            'Đăng nhập thành công',
-            `Chào mừng ${data.user.name} (${
-              data.user.roleType === 'super_admin'
-                ? 'Admin Tổng'
-                : data.user.roleType === 'branch_admin'
-                ? 'Admin Chi Nhánh'
-                : 'Nhân Viên'
-            })`
-          );
-          return;
-        }
-      } else if (resp.status === 401) {
-        const errData = await resp.json().catch(() => null);
+      const data = await authService.login(query, enteredPassword);
+      if (data.success && data.user) {
+        loginWithUser(data.user, data.branch);
         setIsLoading(false);
-        addToast('error', 'Đăng nhập thất bại', errData?.error || 'Mật khẩu không chính xác.');
+        addToast(
+          'success',
+          'Đăng nhập thành công',
+          `Chào mừng ${data.user.name} (${
+            data.user.roleType === 'super_admin'
+              ? 'Admin Tổng'
+              : data.user.roleType === 'branch_admin'
+              ? 'Admin Chi Nhánh'
+              : 'Nhân Viên'
+          })`
+        );
         return;
       }
-      // Nếu 404 (chưa kịp đồng bộ lên DB), tiếp tục kiểm tra trong bộ nhớ Local bên dưới và tự động đồng bộ lên DB
-    } catch (apiErr) {
+    } catch (apiErr: any) {
+      if (apiErr?.status === 401) {
+        setIsLoading(false);
+        addToast('error', 'Đăng nhập thất bại', apiErr.message || 'Mật khẩu không chính xác.');
+        return;
+      }
       console.warn('[Login] Backend auth service unavailable, falling back to local memory:', apiErr);
     }
 
@@ -112,14 +101,12 @@ export const LoginView: React.FC = () => {
     }
 
     // Tự động đồng bộ nhân viên từ Local lên Neon DB nếu trước đó chưa đồng bộ
-    fetch(`${API_BASE_URL}/api/users`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    userService
+      .create({
         ...found,
         password: enteredPassword,
-      }),
-    }).catch(() => {});
+      })
+      .catch(() => {});
 
     loginAs(found.id);
     switchRoleType(found.roleType);

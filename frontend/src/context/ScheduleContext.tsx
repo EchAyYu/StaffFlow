@@ -37,13 +37,19 @@ import {
 } from '../utils/formatters';
 import { runBusinessScheduler, SolverStepLog } from '../utils/schedulerSolver';
 import { BranchEntity } from '../domain/BranchModel';
+import { useToastState, ToastMessage } from '../hooks/useToastState';
+import { usePayrollEngine } from '../hooks/usePayrollEngine';
+import {
+  systemService,
+  branchService,
+  userService,
+  rolesLinesService,
+  availabilityService,
+  scheduleService,
+  shiftRequestService,
+} from '../services';
 
-export interface ToastMessage {
-  id: string;
-  type: 'success' | 'warning' | 'info' | 'error';
-  title: string;
-  message: string;
-}
+export type { ToastMessage };
 
 interface ScheduleContextType {
   // 1. Auth & Branches
@@ -138,9 +144,6 @@ interface ScheduleContextType {
 
 const ScheduleContext = createContext<ScheduleContextType | undefined>(undefined);
 
-const API_BASE_URL =
-  (import.meta as unknown as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL || 'http://localhost:5000';
-
 const LEGACY_STORAGE_PREFIX = 'optishift_clean_v4_';
 const STORAGE_PREFIX = 'staffflow_v1_';
 const SYNC_CHANNEL_NAME = 'staffflow_cross_tab_sync';
@@ -201,13 +204,7 @@ function getStoredJson<T>(key: string, defaultValue: T): T {
 
 export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   // Toasts
-  const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const addToast = (type: 'success' | 'warning' | 'info' | 'error', title: string, message: string) => {
-    const id = Math.random().toString(36).substring(2, 9);
-    setToasts((prev) => [...prev, { id, type, title, message }]);
-    setTimeout(() => removeToast(id), 5000);
-  };
-  const removeToast = (id: string) => setToasts((prev) => prev.filter((t) => t.id !== id));
+  const { toasts, addToast, removeToast } = useToastState();
 
   // 1. Branches & Selected Branch
   const [branches, setBranches] = useState<Branch[]>(() => {
@@ -403,11 +400,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const syncScheduleToBackend = useCallback((sched: WeeklySchedule) => {
     if (!sched.branchId) return;
-    fetch(`${API_BASE_URL}/api/schedules`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(sched),
-    }).catch((err) => {
+    scheduleService.saveSchedule(sched).catch((err) => {
       console.warn('[ScheduleSync] Failed to sync schedule to Neon DB:', err);
     });
   }, []);
@@ -693,10 +686,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     let isMounted = true;
     const fetchInitialData = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/initial-state`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!isMounted) return;
+        const data = await systemService.getInitialState();
+        if (!isMounted || !data) return;
 
         // 1. Branches
         if (Array.isArray(data.branches) && data.branches.length > 0) {
@@ -731,10 +722,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
               if (!alreadyInRemote) {
                 merged.push(p);
                 // Auto-sync unsaved local employee to Neon DB
-                fetch(`${API_BASE_URL}/api/users`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
+                userService
+                  .create({
                     id: p.id,
                     branchId: p.branchId,
                     employeeCode: p.employeeCode,
@@ -750,8 +739,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
                     phone: p.phone,
                     skills: p.skills,
                     baseHourlyRate: p.baseHourlyRate,
-                  }),
-                }).catch(() => {});
+                  })
+                  .catch(() => {});
               }
             });
             return merged;
@@ -811,18 +800,16 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
               const key = `${localReg.userId}_${localReg.weekStartDate}`;
               if (!remoteMap.has(key)) {
                 merged.push(localReg);
-                fetch(`${API_BASE_URL}/api/availability`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
+                availabilityService
+                  .saveAvailability({
                     userId: localReg.userId,
                     branchId: localReg.branchId,
                     weekStartDate: localReg.weekStartDate,
                     slots: localReg.slots,
                     dayCustomHours: localReg.dayCustomHours,
                     note: localReg.note,
-                  }),
-                }).catch(() => {});
+                  })
+                  .catch(() => {});
               }
             });
             return merged;
@@ -878,11 +865,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
             prev.forEach((localSr) => {
               if (!remoteMap.has(localSr.id)) {
                 merged.push(localSr);
-                fetch(`${API_BASE_URL}/api/shift-requests`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(localSr),
-                }).catch(() => {});
+                shiftRequestService.create(localSr).catch(() => {});
               }
             });
             return merged;
@@ -1073,10 +1056,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
 
     // Đồng bộ lên Neon Backend
-    fetch(`${API_BASE_URL}/api/branches`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    branchService
+      .create({
         id,
         code: bData.code,
         name: bData.name,
@@ -1089,8 +1070,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         admin_username: bData.adminUsername,
         admin_password: bData.adminPassword,
         admin_email: bData.adminEmail,
-      }),
-    }).catch(() => {});
+      })
+      .catch(() => {});
 
     addAuditLog(
       'CREATE_BRANCH_WITH_ADMIN',
@@ -1123,10 +1104,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
 
     // Đồng bộ lên Neon Backend
-    fetch(`${API_BASE_URL}/api/branches/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    branchService
+      .update(id, {
         name: updates.name,
         address: updates.address,
         phone: updates.phone,
@@ -1137,8 +1116,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         admin_username: updates.adminUsername,
         admin_password: updates.adminPassword,
         admin_email: updates.adminEmail,
-      }),
-    }).catch(() => {});
+      })
+      .catch(() => {});
 
     addAuditLog('UPDATE_BRANCH_CONFIG', 'Branch', `Cập nhật thông tin chi nhánh và tài khoản Admin: ${id}`);
     addToast('success', 'Cập nhật thành công', `Thông tin chi nhánh và quyền kiểm soát Admin đã được lưu.`);
@@ -1165,15 +1144,12 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/branches/${id}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => null);
-        addToast('error', 'Không thể xóa chi nhánh', errData?.error || 'Máy chủ từ chối thao tác.');
+      await branchService.delete(id);
+    } catch (e: any) {
+      if (e?.status && e.status >= 400 && e.status < 500) {
+        addToast('error', 'Không thể xóa chi nhánh', e.message || 'Máy chủ từ chối thao tác.');
         return;
       }
-    } catch (e) {
       console.warn('Backend delete branch offline, proceeding with local memory:', e);
     }
 
@@ -1226,9 +1202,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     setCurrentBranchId('');
     setActiveTab('branches');
 
-    fetch(`${API_BASE_URL}/api/reset-data`, {
-      method: 'POST',
-    }).catch(() => {});
+    systemService.resetData().catch(() => {});
 
     broadcastSync('all');
 
@@ -1243,10 +1217,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     addAuditLog('CREATE_EMPLOYEE', 'Employee', `Tạo hồ sơ nhân viên: ${newEmp.name} (${newEmp.employeeCode})`);
     addToast('success', 'Tạo nhân viên thành công', `Đã thêm ${newEmp.name} (${newEmp.employeeCode}) vào chi nhánh.`);
 
-    fetch(`${API_BASE_URL}/api/users`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    userService
+      .create({
         id,
         branchId: newEmp.branchId,
         employeeCode: newEmp.employeeCode,
@@ -1262,8 +1234,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         phone: newEmp.phone,
         skills: newEmp.skills,
         baseHourlyRate: newEmp.baseHourlyRate,
-      }),
-    }).catch(() => {});
+      })
+      .catch(() => {});
   };
 
   const updateEmployee = (id: string, updates: Partial<Employee>) => {
@@ -1277,10 +1249,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     addAuditLog('UPDATE_EMPLOYEE', 'Employee', `Cập nhật thông tin tài khoản/nhân sự ${mergedEmp?.name || id}`);
     addToast('success', 'Cập nhật thành công', `Thông tin hồ sơ ${mergedEmp?.name || id} đã được lưu vào hệ thống.`);
 
-    fetch(`${API_BASE_URL}/api/users/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    userService
+      .update(id, {
         id,
         branchId: mergedEmp?.branchId,
         employeeCode: updates.employeeCode ?? mergedEmp?.employeeCode,
@@ -1297,8 +1267,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         baseHourlyRate: updates.baseHourlyRate ?? mergedEmp?.baseHourlyRate,
         skills: updates.skills ?? mergedEmp?.skills,
         status: updates.status ?? mergedEmp?.status,
-      }),
-    }).catch(() => {});
+      })
+      .catch(() => {});
   };
 
   const deleteEmployee = (id: string) => {
@@ -1306,9 +1276,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     addAuditLog('DELETE_EMPLOYEE', 'Employee', `Xoá nhân viên ${id}`);
     addToast('info', 'Đã xoá nhân sự', `Đã loại bỏ hồ sơ ${id}.`);
 
-    fetch(`${API_BASE_URL}/api/users/${id}`, {
-      method: 'DELETE',
-    }).catch(() => {});
+    userService.delete(id).catch(() => {});
   };
 
   const toggleEmployeeStatus = (id: string) => {
@@ -1321,10 +1289,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     );
     addAuditLog('TOGGLE_EMPLOYEE_STATUS', 'Employee', `Đổi trạng thái ${targetEmp.name} sang ${nextStatus}`);
 
-    fetch(`${API_BASE_URL}/api/users/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    userService
+      .update(id, {
         id,
         branchId: targetEmp.branchId,
         employeeCode: targetEmp.employeeCode,
@@ -1340,8 +1306,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         baseHourlyRate: targetEmp.baseHourlyRate,
         skills: targetEmp.skills,
         status: nextStatus,
-      }),
-    }).catch(() => {});
+      })
+      .catch(() => {});
   };
 
   // Role CRUD
@@ -1356,11 +1322,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     addAuditLog('CREATE_ROLE', 'BusinessRole', `Tạo vai trò mới: ${newRole.name} (${newRole.code})`);
     addToast('success', 'Tạo vai trò thành công', `Đã thêm vai trò ${newRole.name}.`);
 
-    fetch(`${API_BASE_URL}/api/roles`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newRole),
-    }).catch(() => {});
+    rolesLinesService.saveRole(newRole).catch(() => {});
   };
 
   const updateRole = (id: string, updates: Partial<BusinessRole>) => {
@@ -1371,11 +1333,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     addToast('success', 'Lưu vai trò', `Đã cập nhật thông tin vai trò.`);
 
     if (updatedRole) {
-      fetch(`${API_BASE_URL}/api/roles`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedRole),
-      }).catch(() => {});
+      rolesLinesService.saveRole(updatedRole).catch(() => {});
     }
   };
 
@@ -1397,11 +1355,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     const existing = lineConfigs.find((l) => l.lineCode === lineCode && l.branchId === currentBranchId);
     const payload = updatedLine || (existing ? { ...existing, ...updates } : undefined);
     if (payload) {
-      fetch(`${API_BASE_URL}/api/line-configs`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      }).catch(() => {});
+      rolesLinesService.updateLineConfig(payload).catch(() => {});
     }
   };
 
@@ -1431,17 +1385,15 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
       }
     });
 
-    fetch(`${API_BASE_URL}/api/line-requirements`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    rolesLinesService
+      .updateLineRequirement({
         id: reqId,
         branchId: currentBranchId,
         lineCode,
         roleId,
         headcountRequired,
-      }),
-    }).catch(() => {});
+      })
+      .catch(() => {});
   };
 
   // Registrations
@@ -1475,20 +1427,18 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
       return [...prev, newReg];
     });
 
-    fetch(`${API_BASE_URL}/api/availability`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    availabilityService
+      .saveAvailability({
         userId,
         branchId: targetBranchId,
         weekStartDate: CURRENT_WEEK_START,
         slots,
         dayCustomHours,
         note,
-      }),
-    }).catch((err) => {
-      console.warn('[AvailabilitySync] Failed to sync availability to Neon DB:', err);
-    });
+      })
+      .catch((err) => {
+        console.warn('[AvailabilitySync] Failed to sync availability to Neon DB:', err);
+      });
 
     addAuditLog('SUBMIT_AVAILABILITY', 'AvailabilityRegistration', `Nhân viên ${userId} đã nộp phiếu đăng ký ca`);
     addToast('success', 'Gửi đăng ký ca thành công', 'Phiếu nguyện vọng của bạn đã được lưu trữ lên hệ thống đám mây và chuyển tới Quản lý.');
@@ -1778,11 +1728,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
       broadcastSync('shiftRequests');
     } catch {}
 
-    fetch(`${API_BASE_URL}/api/shift-requests`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newReq),
-    }).catch(() => {});
+    shiftRequestService.create(newReq).catch(() => {});
 
     addAuditLog(
       'CREATE_SHIFT_REQUEST',
@@ -1839,11 +1785,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch {}
 
     if (updatedReqObj) {
-      fetch(`${API_BASE_URL}/api/shift-requests/${requestId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedReqObj),
-      }).catch(() => {});
+      shiftRequestService.update(requestId, updatedReqObj).catch(() => {});
     }
 
     if (decision === 'accept') {
@@ -1899,11 +1841,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch {}
 
     if (updatedReqObj) {
-      fetch(`${API_BASE_URL}/api/shift-requests/${requestId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedReqObj),
-      }).catch(() => {});
+      shiftRequestService.update(requestId, updatedReqObj).catch(() => {});
     }
 
     // If approved, automatically update the schedule assignments and sync to Neon DB!
@@ -2003,18 +1941,16 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
                   [req.day]: 'OFF',
                 },
               };
-              fetch(`${API_BASE_URL}/api/availability`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+              availabilityService
+                .saveAvailability({
                   userId: updatedReg.userId,
                   branchId: updatedReg.branchId || targetBranch,
                   weekStartDate: updatedReg.weekStartDate,
                   slots: updatedReg.slots,
                   dayCustomHours: updatedReg.dayCustomHours,
                   note: updatedReg.note,
-                }),
-              }).catch(() => {});
+                })
+                .catch(() => {});
               return updatedReg;
             }
             return r;
@@ -2111,11 +2047,7 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch {}
 
     if (updatedReqObj) {
-      fetch(`${API_BASE_URL}/api/shift-requests/${requestId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedReqObj),
-      }).catch(() => {});
+      shiftRequestService.update(requestId, updatedReqObj).catch(() => {});
     }
 
     addAuditLog(
@@ -2127,102 +2059,30 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   // 10. Automatic Hours & Payroll Calculation Engine
-  const [payrollRecords, setPayrollRecords] = useState<PayrollRecord[]>([]);
-
-  // Calculate payroll on the fly based on schedule assignments and past day completion!
-  useEffect(() => {
-    const lineMap = new Map<LineCode, number>();
-    lineConfigs.forEach((l) => lineMap.set(l.lineCode, l.durationHours));
-
-    const roleRateMap = new Map<string, number>();
-    roles.forEach((r) => roleRateMap.set(r.id, r.defaultHourlyRate));
-
-    const records: PayrollRecord[] = employees
-      .filter((e) => e.branchId === currentBranchId)
-      .map((emp) => {
-        let completedHours = 0;
-        let projectedHours = 0;
-        let basePay = 0;
-
-        schedule.assignments.forEach((a) => {
-          if (a.userId === emp.id) {
-            let duration = lineMap.get(a.lineCode) || 6.5;
-            if (a.customStartTime && a.customEndTime) {
-              const custom = calculateHoursBetween(a.customStartTime, a.customEndTime);
-              if (custom > 0) duration = custom;
-            }
-            const role = roles.find((r) => r.id === a.roleId || r.code === a.roleId || a.roleId.includes(r.code));
-            const { rate } = calculateShiftHourlyRate(role, emp);
-            const dayObj = DAYS_OF_WEEK.find((d) => d.key === a.day);
-
-            if (dayObj?.isPast) {
-              // End-of-day automatic hours accumulation!
-              completedHours += duration;
-              basePay += duration * rate;
-            } else {
-              // Projected future shifts in the week
-              projectedHours += duration;
-              basePay += duration * rate;
-            }
-          }
-        });
-
-        const otHours = otHoursMap[emp.id] ?? 0;
-        const otMultiplier = 1.5;
-        const avgRate = emp.baseHourlyRate || emp.wageRates[Object.keys(emp.wageRates)[0]] || 35000;
-        const otPay = otHours * avgRate * otMultiplier;
-
-        // Full-time deduction check if shortfall below standard rate
-        let shortageDeduction = 0;
-        const totalWeekHours = completedHours + projectedHours;
-        const standardWeeklyRate = 40; // 208 / 4 = 52 or 40h/week
-        if (emp.employmentType === 'full_time' && totalWeekHours < standardWeeklyRate) {
-          const missingHours = standardWeeklyRate - totalWeekHours;
-          shortageDeduction = missingHours * (avgRate * 0.7); // illustrative deduction rule
-        }
-
-        const totalPay = Math.max(0, basePay + otPay - shortageDeduction);
-
-        return {
-          userId: emp.id,
-          employeeCode: emp.employeeCode,
-          name: emp.name,
-          branchId: emp.branchId,
-          employmentType: emp.employmentType,
-          completedHours,
-          projectedHours,
-          otHours,
-          otMultiplier,
-          basePay,
-          otPay,
-          shortageDeduction,
-          totalPay,
-          status: 'draft',
-        };
-      });
-
-    setPayrollRecords(records);
-  }, [schedule.assignments, lineConfigs, roles, employees, currentBranchId, otHoursMap]);
+  const { payrollRecords } = usePayrollEngine({
+    assignments: schedule.assignments,
+    lineConfigs,
+    roles,
+    employees,
+    currentBranchId,
+    otHoursMap,
+  });
 
   const updateEmployeeOT = (userId: string, otHours: number) => {
     setOtHoursMap((prev) => ({ ...prev, [userId]: otHours }));
 
     const existingRec = payrollRecords.find((p) => p.userId === userId);
-    fetch(`${API_BASE_URL}/api/payroll-ot`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    systemService
+      .savePayrollOt({
         userId,
         branchId: currentBranchId,
         otHours,
         completedHours: existingRec?.completedHours || 0,
         projectedHours: existingRec?.projectedHours || 0,
         basePay: existingRec?.basePay || 0,
-        otPay: existingRec?.otPay || 0,
-        shortageDeduction: existingRec?.shortageDeduction || 0,
-        totalPay: existingRec?.totalPay || 0,
-      }),
-    }).catch(() => {});
+        weekStartDate: CURRENT_WEEK_START,
+      })
+      .catch(() => {});
 
     addAuditLog('UPDATE_OT', 'Payroll', `Admin nhập OT cho nhân viên ${userId}: ${otHours} giờ`);
     addToast('success', 'Lưu giờ tăng ca (OT)', `Đã cập nhật ${otHours}h OT cho nhân viên.`);
