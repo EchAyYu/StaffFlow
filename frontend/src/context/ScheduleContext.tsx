@@ -148,8 +148,7 @@ interface ScheduleContextType {
 
 const ScheduleContext = createContext<ScheduleContextType | undefined>(undefined);
 
-const LEGACY_STORAGE_PREFIX = 'optishift_clean_v4_';
-const STORAGE_PREFIX = 'staffflow_v1_';
+const STORAGE_PREFIX = 'staffflow_v2_';
 const SYNC_CHANNEL_NAME = 'staffflow_cross_tab_sync';
 
 function createEmptySchedule(branchId: string): WeeklySchedule {
@@ -199,7 +198,7 @@ function broadcastSync(keys: string | string[]) {
 
 function getStoredJson<T>(key: string, defaultValue: T): T {
   try {
-    const val = localStorage.getItem(`${STORAGE_PREFIX}${key}`) || localStorage.getItem(`${LEGACY_STORAGE_PREFIX}${key}`);
+    const val = localStorage.getItem(`${STORAGE_PREFIX}${key}`);
     return val ? JSON.parse(val) : defaultValue;
   } catch {
     return defaultValue;
@@ -210,55 +209,19 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Toasts
   const { toasts, addToast, removeToast } = useToastState();
 
-  // 1. Branches & Selected Branch
+  // 1. Branches & Selected Branch — Rỗng theo mặc định, tải trực tiếp từ máy chủ đám mây
   const [branches, setBranches] = useState<Branch[]>(() => {
-    return getStoredJson<Branch[]>('branches', MOCK_BRANCHES);
+    return getStoredJson<Branch[]>('branches', []);
   });
 
   // 2. Roles & Skills
   const [roles, setRoles] = useState<BusinessRole[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_PREFIX}roles`) || localStorage.getItem(`${LEGACY_STORAGE_PREFIX}roles`);
-      if (saved) {
-        const parsed: BusinessRole[] = JSON.parse(saved);
-        // If there are branch-specific roles, filter out legacy orphaned template roles with empty branchId
-        const hasBranchRoles = parsed.some((r) => Boolean(r.branchId));
-        if (hasBranchRoles) {
-          return parsed.filter((r) => {
-            if (!r.branchId) {
-              return !parsed.some((other) => Boolean(other.branchId) && other.code === r.code);
-            }
-            return true;
-          });
-        }
-        return parsed;
-      }
-      return MOCK_ROLES;
-    } catch {
-      return MOCK_ROLES;
-    }
+    return getStoredJson<BusinessRole[]>('roles', MOCK_ROLES);
   });
 
-  // 3. Employees
+  // 3. Employees — Duy nhất Admin Tổng theo mặc định, không bao giờ tự sinh nhân sự giả
   const [employees, setEmployees] = useState<Employee[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_PREFIX}employees`) || localStorage.getItem(`${LEGACY_STORAGE_PREFIX}employees`);
-      if (saved) {
-        const parsed: Employee[] = JSON.parse(saved);
-        // Dọn dẹp dữ liệu rác cũ: Giữ lại Admin Tổng và các nhân sự thuộc các chi nhánh thực tế đang tồn tại
-        const branchIds = new Set(branches.map((b) => b.id));
-        const cleanList =
-          branchIds.size > 0
-            ? parsed.filter(
-                (e) => e.roleType === 'super_admin' || e.id === 'USR-SUPER-01' || (e.branchId && branchIds.has(e.branchId))
-              )
-            : parsed;
-        return cleanList.length > 0 ? cleanList : MOCK_EMPLOYEES;
-      }
-      return MOCK_EMPLOYEES;
-    } catch {
-      return MOCK_EMPLOYEES;
-    }
+    return getStoredJson<Employee[]>('employees', MOCK_EMPLOYEES);
   });
 
   // 4. Current User & Role Type - Isolated per browser tab using sessionStorage
@@ -698,223 +661,84 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
       const data = await systemService.getInitialState();
       if (!data) return;
 
-      // 1. Branches
-      if (Array.isArray(data.branches) && data.branches.length > 0) {
-        setBranches((prev) => {
-          const remoteMap = new Map<string, Branch>();
-          data.branches.forEach((b: Branch) => remoteMap.set(b.id, b));
-          const merged = data.branches.slice();
-          prev.forEach((p) => {
-            if (!remoteMap.has(p.id)) {
-              merged.push(p);
-              branchService
-                .create({
-                  id: p.id,
-                  code: p.code,
-                  name: p.name,
-                  address: p.address,
-                  phone: p.phone,
-                  standard_monthly_hours: p.standardMonthlyHours,
-                  max_fulltime_off_days: p.maxFulltimeOffDays,
-                  max_parttime_off_days: p.maxParttimeOffDays,
-                  admin_name: p.adminName,
-                  admin_username: p.adminUsername,
-                  admin_password: p.adminPassword || '123456',
-                  admin_email: p.adminEmail,
-                })
-                .catch(() => {});
+      // 0. Version Invalidation: Purge old cache if database was reset or upgraded
+      if (data.systemResetVersion) {
+        const storedVersion = localStorage.getItem(`${STORAGE_PREFIX}system_version`);
+        if (storedVersion !== data.systemResetVersion) {
+          console.log('[SystemReset] New database version:', data.systemResetVersion);
+          Object.keys(localStorage).forEach((k) => {
+            if (k.startsWith('staffflow_') || k.startsWith('optishift_')) {
+              localStorage.removeItem(k);
             }
           });
-          return merged;
-        });
+          localStorage.setItem(`${STORAGE_PREFIX}system_version`, data.systemResetVersion);
+        }
+      }
+
+      // 1. Branches — Single Source of Truth
+      if (Array.isArray(data.branches)) {
+        setBranches(data.branches);
         setCurrentBranchId((prevBranchId) => {
           if (prevBranchId && data.branches.some((b: Branch) => b.id === prevBranchId)) {
             return prevBranchId;
           }
-          return data.branches[0]?.id || prevBranchId;
+          return data.branches[0]?.id || '';
         });
       }
 
-      // 2. Employees
-      if (Array.isArray(data.employees) && data.employees.length > 0) {
-        setEmployees((prev) => {
-          const merged: Employee[] = data.employees.slice();
-          prev.forEach((p) => {
-            const alreadyInRemote = merged.some(
-              (r) =>
-                r.id === p.id ||
-                (r.username && p.username && r.username.toLowerCase() === p.username.toLowerCase()) ||
-                (r.employeeCode === p.employeeCode && (r.branchId || '') === (p.branchId || '') && r.roleType === p.roleType)
-            );
-            if (!alreadyInRemote) {
-              merged.push(p);
-              // Auto-sync unsaved local employee to Neon DB
-              userService
-                .create({
-                  id: p.id,
-                  branchId: p.branchId,
-                  employeeCode: p.employeeCode,
-                  fullName: p.name,
-                  email: p.email,
-                  username: p.username,
-                  password: p.password || '123456',
-                  roleType: p.roleType,
-                  gender: p.gender,
-                  dob: p.dob,
-                  joinedDate: p.joinedDate,
-                  employmentType: p.employmentType,
-                  phone: p.phone,
-                  skills: p.skills,
-                  baseHourlyRate: p.baseHourlyRate,
-                })
-                .catch(() => {});
-            }
-          });
-          return merged;
-        });
+      // 2. Employees — Single Source of Truth
+      if (Array.isArray(data.employees)) {
+        if (data.employees.length > 0) {
+          setEmployees(data.employees);
+        } else {
+          setEmployees(MOCK_EMPLOYEES);
+        }
       }
 
       // 3. Business Roles
       if (Array.isArray(data.roles) && data.roles.length > 0) {
-        setRoles((prev) => {
-          const remoteMap = new Map<string, BusinessRole>();
-          data.roles.forEach((r: BusinessRole) => remoteMap.set(r.id, r));
-          const merged = data.roles.slice();
-          prev.forEach((r) => {
-            if (!remoteMap.has(r.id)) merged.push(r);
-          });
-          return merged;
-        });
+        setRoles(data.roles);
       }
 
       // 4. Line Configs
       if (Array.isArray(data.lineConfigs) && data.lineConfigs.length > 0) {
-        setLineConfigs((prev) => {
-          const remoteMap = new Map<string, LineConfig>();
-          data.lineConfigs.forEach((l: LineConfig) => remoteMap.set(`${l.branchId}_${l.lineCode}`, l));
-          const merged = data.lineConfigs.slice();
-          prev.forEach((l) => {
-            if (!remoteMap.has(`${l.branchId}_${l.lineCode}`)) merged.push(l);
-          });
-          return merged;
-        });
+        setLineConfigs(data.lineConfigs);
       }
 
       // 5. Line Requirements
       if (Array.isArray(data.lineRequirements) && data.lineRequirements.length > 0) {
-        setLineRequirements((prev) => {
-          const remoteMap = new Map<string, LineRequirement>();
-          data.lineRequirements.forEach((lr: LineRequirement) =>
-            remoteMap.set(`${lr.branchId}_${lr.lineCode}_${lr.roleId}`, lr)
-          );
-          const merged = data.lineRequirements.slice();
-          prev.forEach((lr) => {
-            if (!remoteMap.has(`${lr.branchId}_${lr.lineCode}_${lr.roleId}`)) merged.push(lr);
-          });
-          return merged;
-        });
+        setLineRequirements(data.lineRequirements);
       }
 
-      // 6. Availability Registrations (with automatic backup of local-only registrations to Neon DB)
+      // 6. Availability Registrations
       if (Array.isArray(data.registrations)) {
-        setRegistrations((prev) => {
-          const remoteMap = new Map<string, AvailabilityRegistration>();
-          data.registrations.forEach((reg: AvailabilityRegistration) =>
-            remoteMap.set(`${reg.userId}_${reg.weekStartDate}`, reg)
-          );
-          const merged = data.registrations.slice();
-          prev.forEach((localReg) => {
-            const key = `${localReg.userId}_${localReg.weekStartDate}`;
-            if (!remoteMap.has(key)) {
-              merged.push(localReg);
-              availabilityService
-                .saveAvailability({
-                  userId: localReg.userId,
-                  branchId: localReg.branchId,
-                  weekStartDate: localReg.weekStartDate,
-                  slots: localReg.slots,
-                  dayCustomHours: localReg.dayCustomHours,
-                  note: localReg.note,
-                })
-                .catch(() => {});
-            }
-          });
-          return merged;
-        });
+        setRegistrations(data.registrations);
       }
 
-      // 7. Weekly Schedules per Branch (with automatic backup of local-only schedules to Neon DB)
+      // 7. Weekly Schedules per Branch
       if (Array.isArray(data.schedules)) {
-        setSchedulesByBranch((prevMap) => {
-          const nextMap: Record<string, WeeklySchedule> = { ...prevMap };
-          const remoteBranches = new Set<string>();
-
-          data.schedules.forEach((remoteSched: WeeklySchedule) => {
-            if (!remoteSched.branchId) return;
-            remoteBranches.add(remoteSched.branchId);
-            const existingLocal = prevMap[remoteSched.branchId];
-            // Prefer remote schedule if it has assignments or if local is empty
-            if (
-              (remoteSched.assignments && remoteSched.assignments.length > 0) ||
-              !existingLocal ||
-              existingLocal.assignments.length === 0
-            ) {
-              nextMap[remoteSched.branchId] = remoteSched;
-            } else if (existingLocal && existingLocal.assignments.length > 0 && remoteSched.assignments.length === 0) {
-              // Local has assignments whereas remote is empty -> push local schedule to Neon DB!
-              syncScheduleToBackend(existingLocal);
-            }
-          });
-
-          // Push any local branch schedules that do not exist on remote yet
-          Object.values(prevMap).forEach((localSched) => {
-            if (
-              localSched &&
-              localSched.branchId &&
-              localSched.assignments &&
-              localSched.assignments.length > 0 &&
-              !remoteBranches.has(localSched.branchId)
-            ) {
-              syncScheduleToBackend(localSched);
-            }
-          });
-
-          return nextMap;
+        const nextMap: Record<string, WeeklySchedule> = {};
+        data.schedules.forEach((remoteSched: WeeklySchedule) => {
+          if (remoteSched.branchId) {
+            nextMap[remoteSched.branchId] = remoteSched;
+          }
         });
+        setSchedulesByBranch(nextMap);
       }
 
       // 8. Shift Requests
       if (Array.isArray(data.shiftRequests)) {
-        setShiftRequests((prev) => {
-          const remoteMap = new Map<string, ShiftRequest>();
-          data.shiftRequests.forEach((sr: ShiftRequest) => remoteMap.set(sr.id, sr));
-          const merged = data.shiftRequests.slice();
-          prev.forEach((localSr) => {
-            if (!remoteMap.has(localSr.id)) {
-              merged.push(localSr);
-              shiftRequestService.create(localSr).catch(() => {});
-            }
-          });
-          return merged;
-        });
+        setShiftRequests(data.shiftRequests);
       }
 
       // 9. Payroll OT Map
       if (data.payrollOtMap && typeof data.payrollOtMap === 'object') {
-        setOtHoursMap((prev) => ({ ...prev, ...data.payrollOtMap }));
+        setOtHoursMap(data.payrollOtMap);
       }
 
       // 10. Audit Logs
-      if (Array.isArray(data.auditLogs) && data.auditLogs.length > 0) {
-        setAuditLogs((prev) => {
-          const remoteMap = new Map<string, AuditLog>();
-          data.auditLogs.forEach((l: AuditLog) => remoteMap.set(l.id, l));
-          const merged = data.auditLogs.slice();
-          prev.forEach((l) => {
-            if (!remoteMap.has(l.id)) merged.push(l);
-          });
-          return merged.slice(0, 150);
-        });
+      if (Array.isArray(data.auditLogs)) {
+        setAuditLogs(data.auditLogs);
       }
 
       if (notify) {
@@ -927,9 +751,9 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     } finally {
       setIsSyncingRemote(false);
     }
-  }, [syncScheduleToBackend, addToast]);
+  }, [addToast]);
 
-  // Synchronize live data on mount and whenever page becomes visible or focused
+  // Synchronize live data on mount, tab visibility/focus, and every 12 seconds
   useEffect(() => {
     refreshDataFromBackend(false);
 
@@ -941,12 +765,12 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     document.addEventListener('visibilitychange', handleSync);
     window.addEventListener('focus', handleSync);
 
-    // Polling tự động mỗi 25 giây để nhận cập nhật từ các thiết bị khác trong thời gian thực
+    // Polling tự động mỗi 12 giây để nhận cập nhật từ các thiết bị khác trong thời gian thực
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         refreshDataFromBackend(false);
       }
-    }, 25000);
+    }, 12000);
 
     return () => {
       document.removeEventListener('visibilitychange', handleSync);
@@ -1037,82 +861,12 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   // Branch CRUD (Super Admin)
-  const addBranch = (bData: Omit<Branch, 'id'>) => {
+  const addBranch = async (bData: Omit<Branch, 'id'>) => {
     const id = `BR-${bData.code}`;
     const newBranch: Branch = { ...bData, id };
-    setBranches((prev) => [...prev, newBranch]);
 
-    // 1. Tự động cấp tài khoản Admin Chi Nhánh vào danh sách nhân sự (Duy nhất 1 tài khoản quản trị)
-    if (bData.adminUsername) {
-      const adminUserId = `USR-ADMIN-${bData.code}`;
-      const newAdminUser: Employee = {
-        id: adminUserId,
-        branchId: id,
-        employeeCode: `ADM-${bData.code}`,
-        name: bData.adminName || `Admin ${bData.name}`,
-        email: bData.adminEmail || `${bData.adminUsername}@company.com`,
-        username: bData.adminUsername,
-        password: bData.adminPassword,
-        roleType: 'branch_admin',
-        gender: 'male',
-        dob: '1990-01-01',
-        joinedDate: new Date().toISOString().split('T')[0],
-        employmentType: 'full_time',
-        skills: [],
-        wageRates: {},
-        status: 'active',
-        phone: bData.phone,
-      };
-      setEmployees((prev) => {
-        const filtered = prev.filter((e) => e.id !== adminUserId);
-        return [...filtered, newAdminUser];
-      });
-    }
-
-    // 2. Khởi tạo danh mục vai trò chuẩn tối thiểu (để chi nhánh có thể tùy chỉnh hoặc thêm mới)
-    const newBranchRoles: BusinessRole[] = [
-      { id: `ROLE-SEC-${bData.code}`, branchId: id, code: 'SEC', name: 'Bảo Vệ', description: 'An ninh, dắt xe và hướng dẫn khách hàng (Chỉ Nam)', genderRequirement: 'male_only', defaultHourlyRate: 35000, isSystemDefault: true, salaryCalculationType: 'employee_seniority_rate' },
-      { id: `ROLE-BAR-${bData.code}`, branchId: id, code: 'BAR', name: 'Pha Chế', description: 'Barista chuyên pha chế trà sữa, cà phê', genderRequirement: 'any', defaultHourlyRate: 55000, isSystemDefault: true, salaryCalculationType: 'employee_seniority_rate' },
-      { id: `ROLE-SRV-${bData.code}`, branchId: id, code: 'SRV', name: 'Phục Vụ', description: 'Tiếp đón khách hàng, order và dọn bàn', genderRequirement: 'any', defaultHourlyRate: 45000, isSystemDefault: true, salaryCalculationType: 'employee_seniority_rate' },
-      { id: `ROLE-KIT-${bData.code}`, branchId: id, code: 'KIT', name: 'Bếp', description: 'Chuẩn bị đồ ăn nhanh và topping tươi', genderRequirement: 'any', defaultHourlyRate: 50000, isSystemDefault: true, salaryCalculationType: 'fixed_role_rate' },
-      { id: `ROLE-INV-${bData.code}`, branchId: id, code: 'INV', name: 'Soạn Hàng', description: 'Kiểm kê, xuất nhập kho và đóng gói', genderRequirement: 'any', defaultHourlyRate: 46000, isSystemDefault: true, salaryCalculationType: 'fixed_role_rate' },
-    ];
-    setRoles((prev) => [...prev, ...newBranchRoles]);
-
-    // 3. Khởi tạo 3 Line ca làm việc chuẩn (O, M, D) cho chi nhánh
-    const branchLines: LineConfig[] = [
-      { id: `LINE-${bData.code}-O`, branchId: id, lineCode: 'O', lineName: 'Line O — Open (Ca Mở Cửa / Sáng)', startTime: '05:30', endTime: '12:00', durationHours: 6.5, description: 'Mở cửa quầy, nhận giao nhận nguyên liệu đá tươi và phục vụ khách sáng' },
-      { id: `LINE-${bData.code}-M`, branchId: id, lineCode: 'M', lineName: 'Line M — Mid (Ca Giữa / Trưa)', startTime: '11:00', endTime: '18:00', durationHours: 7.0, description: 'Khung giờ giao lưu trưa, tiếp đón khách văn phòng và bàn ăn' },
-      { id: `LINE-${bData.code}-D`, branchId: id, lineCode: 'D', lineName: 'Line D — Down (Ca Tối / Đóng Cửa)', startTime: '17:00', endTime: '23:30', durationHours: 6.5, description: 'Khung giờ cao điểm tối, vệ sinh máy pha và đóng quầy kiểm kê' },
-    ];
-    setLineConfigs((prev) => [...prev, ...branchLines]);
-
-    // 4. Định mức headcount ban đầu theo line
-    const branchRequirements: LineRequirement[] = [
-      { id: `REQ-${bData.code}-O-SEC`, branchId: id, lineCode: 'O', roleId: `ROLE-SEC-${bData.code}`, headcountRequired: 1 },
-      { id: `REQ-${bData.code}-O-BAR`, branchId: id, lineCode: 'O', roleId: `ROLE-BAR-${bData.code}`, headcountRequired: 1 },
-      { id: `REQ-${bData.code}-O-SRV`, branchId: id, lineCode: 'O', roleId: `ROLE-SRV-${bData.code}`, headcountRequired: 1 },
-      { id: `REQ-${bData.code}-O-KIT`, branchId: id, lineCode: 'O', roleId: `ROLE-KIT-${bData.code}`, headcountRequired: 1 },
-
-      { id: `REQ-${bData.code}-M-SEC`, branchId: id, lineCode: 'M', roleId: `ROLE-SEC-${bData.code}`, headcountRequired: 1 },
-      { id: `REQ-${bData.code}-M-BAR`, branchId: id, lineCode: 'M', roleId: `ROLE-BAR-${bData.code}`, headcountRequired: 1 },
-      { id: `REQ-${bData.code}-M-SRV`, branchId: id, lineCode: 'M', roleId: `ROLE-SRV-${bData.code}`, headcountRequired: 1 },
-      { id: `REQ-${bData.code}-M-INV`, branchId: id, lineCode: 'M', roleId: `ROLE-INV-${bData.code}`, headcountRequired: 1 },
-
-      { id: `REQ-${bData.code}-D-SEC`, branchId: id, lineCode: 'D', roleId: `ROLE-SEC-${bData.code}`, headcountRequired: 1 },
-      { id: `REQ-${bData.code}-D-BAR`, branchId: id, lineCode: 'D', roleId: `ROLE-BAR-${bData.code}`, headcountRequired: 2 },
-      { id: `REQ-${bData.code}-D-SRV`, branchId: id, lineCode: 'D', roleId: `ROLE-SRV-${bData.code}`, headcountRequired: 1 },
-    ];
-    setLineRequirements((prev) => [...prev, ...branchRequirements]);
-
-    // Gán branchId hiện tại nếu chưa có
-    if (!currentBranchId) {
-      setCurrentBranchId(id);
-    }
-
-    // Đồng bộ lên Neon Backend
-    branchService
-      .create({
+    try {
+      const created = await branchService.create({
         id,
         code: bData.code,
         name: bData.name,
@@ -1125,50 +879,37 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         admin_username: bData.adminUsername,
         admin_password: bData.adminPassword,
         admin_email: bData.adminEmail,
-      })
-      .then((created) => {
-        if (created && created.id && created.id !== id) {
-          setBranches((prev) => prev.map((b) => (b.id === id ? { ...b, id: created.id } : b)));
-        }
-      })
-      .catch((err) => {
-        console.warn('[addBranch] Cloud sync warning:', err);
-        addToast('warning', 'Lưu tạm thời trên máy', `Không thể đồng bộ chi nhánh lên máy chủ đám mây: ${err?.message || 'Lỗi mạng'}.`);
       });
 
-    addAuditLog(
-      'CREATE_BRANCH_WITH_ADMIN',
-      'Branch',
-      `Tạo chi nhánh mới: ${newBranch.name} (${newBranch.code}) & Cấp tài khoản Admin: ${bData.adminUsername || 'N/A'}`
-    );
-    addToast('success', 'Tạo chi nhánh & cấp tài khoản thành công', `Đã kích hoạt ${newBranch.name} với tài khoản Admin [${bData.adminUsername}]. Dữ liệu nhân sự và lịch làm hoàn toàn sạch để bạn bắt đầu.`);
+      // Lập tức kéo dữ liệu mới nhất từ Neon PostgreSQL về state
+      await refreshDataFromBackend(false);
+      setCurrentBranchId(created?.id || id);
+      broadcastSync('all');
+
+      addAuditLog(
+        'CREATE_BRANCH_WITH_ADMIN',
+        'Branch',
+        `Tạo chi nhánh mới: ${newBranch.name} (${newBranch.code}) & Cấp tài khoản Admin: ${bData.adminUsername || 'N/A'}`
+      );
+      addToast(
+        'success',
+        'Tạo chi nhánh & cấp tài khoản thành công',
+        `Đã kích hoạt ${newBranch.name} với tài khoản Admin [${bData.adminUsername}]. Đã đồng bộ lên máy chủ đám mây.`
+      );
+    } catch (err: any) {
+      console.error('[addBranch] Cloud sync error:', err);
+      addToast(
+        'error',
+        'Lỗi tạo chi nhánh',
+        err?.message || 'Không thể tạo chi nhánh trên máy chủ cơ sở dữ liệu. Vui lòng kiểm tra lại.'
+      );
+      throw err;
+    }
   };
 
-  const updateBranch = (id: string, updates: Partial<Branch>) => {
-    setBranches((prev) => prev.map((b) => (b.id === id ? { ...b, ...updates } : b)));
-
-    // Đồng bộ thông tin Admin Chi Nhánh nếu có cập nhật
-    if (updates.adminName || updates.adminUsername || updates.adminEmail || updates.adminPassword) {
-      setEmployees((prev) =>
-        prev.map((e) => {
-          if (e.branchId === id && e.roleType === 'branch_admin') {
-            return {
-              ...e,
-              name: updates.adminName || e.name,
-              email: updates.adminEmail || e.email,
-              username: updates.adminUsername || e.username,
-              password: updates.adminPassword || e.password,
-              phone: updates.phone || e.phone,
-            };
-          }
-          return e;
-        })
-      );
-    }
-
-    // Đồng bộ lên Neon Backend
-    branchService
-      .update(id, {
+  const updateBranch = async (id: string, updates: Partial<Branch>) => {
+    try {
+      await branchService.update(id, {
         name: updates.name,
         address: updates.address,
         phone: updates.phone,
@@ -1179,11 +920,14 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         admin_username: updates.adminUsername,
         admin_password: updates.adminPassword,
         admin_email: updates.adminEmail,
-      })
-      .catch(() => {});
-
-    addAuditLog('UPDATE_BRANCH_CONFIG', 'Branch', `Cập nhật thông tin chi nhánh và tài khoản Admin: ${id}`);
-    addToast('success', 'Cập nhật thành công', `Thông tin chi nhánh và quyền kiểm soát Admin đã được lưu.`);
+      });
+      await refreshDataFromBackend(false);
+      broadcastSync('all');
+      addAuditLog('UPDATE_BRANCH_CONFIG', 'Branch', `Cập nhật thông tin chi nhánh và tài khoản Admin: ${id}`);
+      addToast('success', 'Cập nhật thành công', `Thông tin chi nhánh đã được lưu trên máy chủ.`);
+    } catch (err: any) {
+      addToast('error', 'Lỗi cập nhật', err?.message || 'Không thể cập nhật chi nhánh.');
+    }
   };
 
   const deleteBranch = async (id: string) => {
@@ -1193,8 +937,6 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
       return;
     }
 
-    // [OOP DOMAIN INVARIANT RULE]
-    // Một chi nhánh (Branch Entity) không thể bị xóa khi vẫn còn nhân sự trực thuộc!
     const branchEntity = new BranchEntity(branchToDelete);
     const branchEmployees = employees.filter((e) => e.branchId === id);
     const branchSched = schedulesByBranch[id];
@@ -1208,40 +950,24 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     try {
       await branchService.delete(id);
-    } catch (e: any) {
-      if (e?.status && e.status >= 400 && e.status < 500) {
-        addToast('error', 'Không thể xóa chi nhánh', e.message || 'Máy chủ từ chối thao tác.');
-        return;
+      await refreshDataFromBackend(false);
+      if (currentBranchId === id) {
+        const remaining = branches.filter((b) => b.id !== id);
+        setCurrentBranchId(remaining[0]?.id || '');
       }
-      console.warn('Backend delete branch offline, proceeding with local memory:', e);
+      broadcastSync('all');
+      addAuditLog(
+        'DELETE_BRANCH',
+        'Branch',
+        `Đã giải thể chi nhánh ${branchToDelete?.name || id} (${branchToDelete?.code || id}) theo chuẩn OOP.`
+      );
+      addToast('success', 'Đã xóa chi nhánh', `Chi nhánh ${branchToDelete?.name || id} đã được xóa sạch khỏi hệ thống.`);
+    } catch (e: any) {
+      addToast('error', 'Không thể xóa chi nhánh', e?.message || 'Máy chủ từ chối thao tác.');
     }
-
-    setBranches((prev) => prev.filter((b) => b.id !== id));
-    setRoles((prev) => prev.filter((r) => r.branchId !== id));
-    setLineConfigs((prev) => prev.filter((l) => l.branchId !== id));
-    setLineRequirements((prev) => prev.filter((lr) => lr.branchId !== id));
-    setRegistrations((prev) => prev.filter((r) => !employees.some((e) => e.branchId === id && e.id === r.userId)));
-    setShiftRequests((prev) => prev.filter((sr) => sr.branchId !== id));
-    setSchedulesByBranch((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-
-    if (currentBranchId === id) {
-      const remaining = branches.filter((b) => b.id !== id);
-      setCurrentBranchId(remaining[0]?.id || '');
-    }
-
-    addAuditLog(
-      'DELETE_BRANCH',
-      'Branch',
-      `Đã giải thể chi nhánh ${branchToDelete?.name || id} (${branchToDelete?.code || id}) theo chuẩn OOP.`
-    );
-    addToast('success', 'Đã xóa chi nhánh', `Chi nhánh ${branchToDelete?.name || id} đã được xóa sạch khỏi hệ thống.`);
   };
 
-  const resetAllDataClean = () => {
+  const resetAllDataClean = async () => {
     try {
       Object.keys(localStorage).forEach((key) => {
         if (key.startsWith('staffflow_') || key.startsWith('optishift_')) {
@@ -1265,23 +991,23 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     setCurrentBranchId('');
     setActiveTab('branches');
 
-    systemService.resetData().catch(() => {});
-
-    broadcastSync('all');
-
-    addToast('success', 'Đã làm sạch toàn bộ dữ liệu', 'Toàn bộ dữ liệu mẫu đã được xóa hoàn toàn. Sẵn sàng bắt đầu!');
+    try {
+      await systemService.resetData();
+      await refreshDataFromBackend(false);
+      broadcastSync('all');
+      addToast('success', 'Đã làm sạch toàn bộ dữ liệu', 'Toàn bộ dữ liệu mẫu đã được xóa hoàn toàn trên Neon DB. Sẵn sàng bắt đầu!');
+    } catch (err: any) {
+      addToast('error', 'Lỗi đặt lại dữ liệu', err?.message || 'Không thể xóa dữ liệu trên máy chủ.');
+    }
   };
 
   // Employee CRUD
-  const addEmployee = (empData: Omit<Employee, 'id'>) => {
+  const addEmployee = async (empData: Omit<Employee, 'id'>) => {
     const id = `EMP-${empData.branchId || 'BR'}-${Date.now().toString().slice(-4)}`;
     const newEmp: Employee = { ...empData, id };
-    setEmployees((prev) => [...prev, newEmp]);
-    addAuditLog('CREATE_EMPLOYEE', 'Employee', `Tạo hồ sơ nhân viên: ${newEmp.name} (${newEmp.employeeCode})`);
-    addToast('success', 'Tạo nhân viên thành công', `Đã thêm ${newEmp.name} (${newEmp.employeeCode}) vào chi nhánh.`);
 
-    userService
-      .create({
+    try {
+      await userService.create({
         id,
         branchId: newEmp.branchId,
         employeeCode: newEmp.employeeCode,
@@ -1297,19 +1023,19 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         phone: newEmp.phone,
         skills: newEmp.skills,
         baseHourlyRate: newEmp.baseHourlyRate,
-      })
-      .then((created) => {
-        if (created && created.id && created.id !== id) {
-          setEmployees((prev) => prev.map((e) => (e.id === id ? { ...e, id: created.id } : e)));
-        }
-      })
-      .catch((err) => {
-        console.warn('[addEmployee] Cloud sync warning:', err);
-        addToast('warning', 'Lưu tạm thời trên máy', `Không thể đồng bộ nhân viên lên máy chủ đám mây: ${err?.message || 'Lỗi mạng'}.`);
       });
+
+      await refreshDataFromBackend(false);
+      broadcastSync('employees');
+      addAuditLog('CREATE_EMPLOYEE', 'Employee', `Tạo hồ sơ nhân viên: ${newEmp.name} (${newEmp.employeeCode})`);
+      addToast('success', 'Tạo nhân viên thành công', `Đã thêm ${newEmp.name} (${newEmp.employeeCode}) vào chi nhánh và lưu vào cơ sở dữ liệu.`);
+    } catch (err: any) {
+      console.error('[addEmployee] Error:', err);
+      addToast('error', 'Lỗi tạo nhân viên', err?.message || 'Không thể tạo nhân viên trên hệ thống.');
+    }
   };
 
-  const updateEmployee = (id: string, updates: Partial<Employee>) => {
+  const updateEmployee = async (id: string, updates: Partial<Employee>) => {
     const existingEmp = employees.find((e) => e.id === id);
     const mergedEmp: Employee | undefined = existingEmp ? { ...existingEmp, ...updates } : undefined;
 
@@ -1317,11 +1043,9 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (currentUser?.id === id) {
       setCurrentUser((prev) => (prev ? { ...prev, ...updates } : null));
     }
-    addAuditLog('UPDATE_EMPLOYEE', 'Employee', `Cập nhật thông tin tài khoản/nhân sự ${mergedEmp?.name || id}`);
-    addToast('success', 'Cập nhật thành công', `Thông tin hồ sơ ${mergedEmp?.name || id} đã được lưu vào hệ thống.`);
 
-    userService
-      .update(id, {
+    try {
+      await userService.update(id, {
         id,
         branchId: mergedEmp?.branchId,
         employeeCode: updates.employeeCode ?? mergedEmp?.employeeCode,
@@ -1338,16 +1062,30 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         baseHourlyRate: updates.baseHourlyRate ?? mergedEmp?.baseHourlyRate,
         skills: updates.skills ?? mergedEmp?.skills,
         status: updates.status ?? mergedEmp?.status,
-      })
-      .catch(() => {});
+      });
+      await refreshDataFromBackend(false);
+      broadcastSync('employees');
+      addAuditLog('UPDATE_EMPLOYEE', 'Employee', `Cập nhật thông tin tài khoản/nhân sự ${mergedEmp?.name || id}`);
+      addToast('success', 'Cập nhật thành công', `Thông tin hồ sơ ${mergedEmp?.name || id} đã được lưu vào hệ thống.`);
+    } catch (err: any) {
+      console.warn('[updateEmployee] Cloud sync warning:', err);
+    }
   };
 
-  const deleteEmployee = (id: string) => {
+  const deleteEmployee = async (id: string) => {
+    const emp = employees.find((e) => e.id === id);
     setEmployees((prev) => prev.filter((e) => e.id !== id));
-    addAuditLog('DELETE_EMPLOYEE', 'Employee', `Xoá nhân viên ${id}`);
-    addToast('info', 'Đã xoá nhân sự', `Đã loại bỏ hồ sơ ${id}.`);
+    setRegistrations((prev) => prev.filter((r) => r.userId !== id));
 
-    userService.delete(id).catch(() => {});
+    try {
+      await userService.delete(id);
+      await refreshDataFromBackend(false);
+      broadcastSync(['employees', 'registrations']);
+      addAuditLog('DELETE_EMPLOYEE', 'Employee', `Xoá nhân viên ${emp?.name || id} (${emp?.employeeCode || id})`);
+      addToast('info', 'Đã xoá nhân sự', `Đã loại bỏ hồ sơ ${emp?.name || id}.`);
+    } catch (err: any) {
+      console.warn('[deleteEmployee] Cloud sync warning:', err);
+    }
   };
 
   const toggleEmployeeStatus = (id: string) => {

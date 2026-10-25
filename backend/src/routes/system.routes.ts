@@ -281,6 +281,7 @@ systemRouter.get('/initial-state', async (req, res) => {
       }));
 
       return res.json({
+        systemResetVersion: '2026-10-26-v2',
         branches,
         employees,
         roles,
@@ -345,7 +346,7 @@ systemRouter.post('/reset-data', async (req, res) => {
           role_type, gender, dob, joined_date, employment_type, phone, status, base_hourly_rate
         )
         VALUES (
-          'USR-SUPER-01', NULL, 'ADM-ALL', 'Trần Minh Tuấn (Admin Tổng)', 'admin.tong@company.com',
+          'USR-SUPER-01', NULL, 'ADM-ALL', 'Huỳnh Ngọc Hậu', 'admin.tong@company.com',
           'admin.tong', $1, 'super_admin', 'male', '1988-04-15', '2020-01-01',
           'full_time', '0901 000 001', 'active', 50000.00
         )

@@ -133,7 +133,7 @@ export const MOCK_EMPLOYEES: Employee[] = [
     id: 'USR-SUPER-01',
     branchId: '',
     employeeCode: 'ADM-ALL',
-    name: 'Trần Minh Tuấn (Admin Tổng)',
+    name: 'Huỳnh Ngọc Hậu',
     email: 'admin.tong@company.com',
     username: 'admin.tong',
     password: 'Admin@2026',

@@ -47,9 +47,9 @@ export const LoginView: React.FC = () => {
         return;
       }
     } catch (apiErr: any) {
-      if (apiErr?.status === 401) {
+      if (apiErr?.status === 401 || apiErr?.status === 404) {
         setIsLoading(false);
-        addToast('error', 'Đăng nhập thất bại', apiErr.message || 'Mật khẩu không chính xác.');
+        addToast('error', 'Đăng nhập thất bại', apiErr.message || 'Tài khoản hoặc mật khẩu không chính xác.');
         return;
       }
       console.warn('[Login] Backend auth service unavailable, falling back to local memory:', apiErr);
