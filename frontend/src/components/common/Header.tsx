@@ -6,6 +6,7 @@ import {
   LogOut,
   Building2,
   Sparkles,
+  RefreshCw,
 } from 'lucide-react';
 
 export const Header: React.FC = () => {
@@ -16,6 +17,8 @@ export const Header: React.FC = () => {
     branches,
     logout,
     schedule,
+    refreshDataFromBackend,
+    isSyncingRemote,
   } = useSchedule();
 
   const currentBranch = branches.find((b) => b.id === currentBranchId) || branches[0];
@@ -91,6 +94,21 @@ export const Header: React.FC = () => {
 
       {/* Right Controls: Notification Bell, Current User Info & Direct Logout Button */}
       <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+        {/* Real-time Cloud Sync Button */}
+        <button
+          onClick={() => refreshDataFromBackend(true)}
+          disabled={isSyncingRemote}
+          className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 text-xs rounded-xl border transition-all font-medium shadow-2xs cursor-pointer ${
+            isSyncingRemote
+              ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+              : 'bg-white hover:bg-slate-50 text-slate-700 hover:text-indigo-600 border-slate-200/90'
+          }`}
+          title="Đồng bộ dữ liệu tức thì từ máy chủ Neon PostgreSQL"
+        >
+          <RefreshCw size={13} className={isSyncingRemote ? 'animate-spin text-indigo-600' : 'text-slate-500'} />
+          <span className="hidden sm:inline text-[11px] font-semibold">{isSyncingRemote ? 'Đang đồng bộ...' : 'Đồng bộ'}</span>
+        </button>
+
         {/* Notification Bell with red pulse dot */}
         <NotificationBell />
 

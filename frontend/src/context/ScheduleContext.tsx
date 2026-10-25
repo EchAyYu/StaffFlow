@@ -137,6 +137,10 @@ interface ScheduleContextType {
 
   // 13. System Utilities
   resetToMockData: () => void;
+  // 14. Cloud Synchronization & Cross-Device State
+  refreshDataFromBackend: (notify?: boolean) => Promise<void>;
+  isSyncingRemote: boolean;
+
   toasts: ToastMessage[];
   addToast: (type: 'success' | 'warning' | 'info' | 'error', title: string, message: string) => void;
   removeToast: (id: string) => void;
@@ -684,242 +688,272 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
   }, [employees, currentUser]);
 
-  // Synchronize live data from Neon PostgreSQL backend on startup
-  useEffect(() => {
-    let isMounted = true;
-    const fetchInitialData = async () => {
-      try {
-        const data = await systemService.getInitialState();
-        if (!isMounted || !data) return;
+  // Cloud Synchronization State
+  const [isSyncingRemote, setIsSyncingRemote] = useState(false);
 
-        // 1. Branches
-        if (Array.isArray(data.branches) && data.branches.length > 0) {
-          setBranches((prev) => {
-            const remoteMap = new Map<string, Branch>();
-            data.branches.forEach((b: Branch) => remoteMap.set(b.id, b));
-            const merged = data.branches.slice();
-            prev.forEach((p) => {
-              if (!remoteMap.has(p.id)) {
-                merged.push(p);
-                branchService
-                  .create({
-                    id: p.id,
-                    code: p.code,
-                    name: p.name,
-                    address: p.address,
-                    phone: p.phone,
-                    standard_monthly_hours: p.standardMonthlyHours,
-                    max_fulltime_off_days: p.maxFulltimeOffDays,
-                    max_parttime_off_days: p.maxParttimeOffDays,
-                    admin_name: p.adminName,
-                    admin_username: p.adminUsername,
-                    admin_password: p.adminPassword || '123456',
-                    admin_email: p.adminEmail,
-                  })
-                  .catch(() => {});
-              }
-            });
-            return merged;
-          });
-          setCurrentBranchId((prevBranchId) => {
-            if (prevBranchId && data.branches.some((b: Branch) => b.id === prevBranchId)) {
-              return prevBranchId;
+  // Synchronize live data from Neon PostgreSQL backend across all devices
+  const refreshDataFromBackend = useCallback(async (notify = false) => {
+    setIsSyncingRemote(true);
+    try {
+      const data = await systemService.getInitialState();
+      if (!data) return;
+
+      // 1. Branches
+      if (Array.isArray(data.branches) && data.branches.length > 0) {
+        setBranches((prev) => {
+          const remoteMap = new Map<string, Branch>();
+          data.branches.forEach((b: Branch) => remoteMap.set(b.id, b));
+          const merged = data.branches.slice();
+          prev.forEach((p) => {
+            if (!remoteMap.has(p.id)) {
+              merged.push(p);
+              branchService
+                .create({
+                  id: p.id,
+                  code: p.code,
+                  name: p.name,
+                  address: p.address,
+                  phone: p.phone,
+                  standard_monthly_hours: p.standardMonthlyHours,
+                  max_fulltime_off_days: p.maxFulltimeOffDays,
+                  max_parttime_off_days: p.maxParttimeOffDays,
+                  admin_name: p.adminName,
+                  admin_username: p.adminUsername,
+                  admin_password: p.adminPassword || '123456',
+                  admin_email: p.adminEmail,
+                })
+                .catch(() => {});
             }
-            return data.branches[0]?.id || prevBranchId;
           });
-        }
+          return merged;
+        });
+        setCurrentBranchId((prevBranchId) => {
+          if (prevBranchId && data.branches.some((b: Branch) => b.id === prevBranchId)) {
+            return prevBranchId;
+          }
+          return data.branches[0]?.id || prevBranchId;
+        });
+      }
 
-        // 2. Employees
-        if (Array.isArray(data.employees) && data.employees.length > 0) {
-          setEmployees((prev) => {
-            const merged: Employee[] = data.employees.slice();
-            prev.forEach((p) => {
-              const alreadyInRemote = merged.some(
-                (r) =>
-                  r.id === p.id ||
-                  (r.username && p.username && r.username.toLowerCase() === p.username.toLowerCase()) ||
-                  (r.employeeCode === p.employeeCode && (r.branchId || '') === (p.branchId || '') && r.roleType === p.roleType)
-              );
-              if (!alreadyInRemote) {
-                merged.push(p);
-                // Auto-sync unsaved local employee to Neon DB
-                userService
-                  .create({
-                    id: p.id,
-                    branchId: p.branchId,
-                    employeeCode: p.employeeCode,
-                    fullName: p.name,
-                    email: p.email,
-                    username: p.username,
-                    password: p.password || '123456',
-                    roleType: p.roleType,
-                    gender: p.gender,
-                    dob: p.dob,
-                    joinedDate: p.joinedDate,
-                    employmentType: p.employmentType,
-                    phone: p.phone,
-                    skills: p.skills,
-                    baseHourlyRate: p.baseHourlyRate,
-                  })
-                  .catch(() => {});
-              }
-            });
-            return merged;
-          });
-        }
-
-        // 3. Business Roles
-        if (Array.isArray(data.roles) && data.roles.length > 0) {
-          setRoles((prev) => {
-            const remoteMap = new Map<string, BusinessRole>();
-            data.roles.forEach((r: BusinessRole) => remoteMap.set(r.id, r));
-            const merged = data.roles.slice();
-            prev.forEach((r) => {
-              if (!remoteMap.has(r.id)) merged.push(r);
-            });
-            return merged;
-          });
-        }
-
-        // 4. Line Configs
-        if (Array.isArray(data.lineConfigs) && data.lineConfigs.length > 0) {
-          setLineConfigs((prev) => {
-            const remoteMap = new Map<string, LineConfig>();
-            data.lineConfigs.forEach((l: LineConfig) => remoteMap.set(`${l.branchId}_${l.lineCode}`, l));
-            const merged = data.lineConfigs.slice();
-            prev.forEach((l) => {
-              if (!remoteMap.has(`${l.branchId}_${l.lineCode}`)) merged.push(l);
-            });
-            return merged;
-          });
-        }
-
-        // 5. Line Requirements
-        if (Array.isArray(data.lineRequirements) && data.lineRequirements.length > 0) {
-          setLineRequirements((prev) => {
-            const remoteMap = new Map<string, LineRequirement>();
-            data.lineRequirements.forEach((lr: LineRequirement) =>
-              remoteMap.set(`${lr.branchId}_${lr.lineCode}_${lr.roleId}`, lr)
+      // 2. Employees
+      if (Array.isArray(data.employees) && data.employees.length > 0) {
+        setEmployees((prev) => {
+          const merged: Employee[] = data.employees.slice();
+          prev.forEach((p) => {
+            const alreadyInRemote = merged.some(
+              (r) =>
+                r.id === p.id ||
+                (r.username && p.username && r.username.toLowerCase() === p.username.toLowerCase()) ||
+                (r.employeeCode === p.employeeCode && (r.branchId || '') === (p.branchId || '') && r.roleType === p.roleType)
             );
-            const merged = data.lineRequirements.slice();
-            prev.forEach((lr) => {
-              if (!remoteMap.has(`${lr.branchId}_${lr.lineCode}_${lr.roleId}`)) merged.push(lr);
-            });
-            return merged;
+            if (!alreadyInRemote) {
+              merged.push(p);
+              // Auto-sync unsaved local employee to Neon DB
+              userService
+                .create({
+                  id: p.id,
+                  branchId: p.branchId,
+                  employeeCode: p.employeeCode,
+                  fullName: p.name,
+                  email: p.email,
+                  username: p.username,
+                  password: p.password || '123456',
+                  roleType: p.roleType,
+                  gender: p.gender,
+                  dob: p.dob,
+                  joinedDate: p.joinedDate,
+                  employmentType: p.employmentType,
+                  phone: p.phone,
+                  skills: p.skills,
+                  baseHourlyRate: p.baseHourlyRate,
+                })
+                .catch(() => {});
+            }
           });
-        }
+          return merged;
+        });
+      }
 
-        // 6. Availability Registrations (with automatic backup of local-only registrations to Neon DB)
-        if (Array.isArray(data.registrations)) {
-          setRegistrations((prev) => {
-            const remoteMap = new Map<string, AvailabilityRegistration>();
-            data.registrations.forEach((reg: AvailabilityRegistration) =>
-              remoteMap.set(`${reg.userId}_${reg.weekStartDate}`, reg)
-            );
-            const merged = data.registrations.slice();
-            prev.forEach((localReg) => {
-              const key = `${localReg.userId}_${localReg.weekStartDate}`;
-              if (!remoteMap.has(key)) {
-                merged.push(localReg);
-                availabilityService
-                  .saveAvailability({
-                    userId: localReg.userId,
-                    branchId: localReg.branchId,
-                    weekStartDate: localReg.weekStartDate,
-                    slots: localReg.slots,
-                    dayCustomHours: localReg.dayCustomHours,
-                    note: localReg.note,
-                  })
-                  .catch(() => {});
-              }
-            });
-            return merged;
+      // 3. Business Roles
+      if (Array.isArray(data.roles) && data.roles.length > 0) {
+        setRoles((prev) => {
+          const remoteMap = new Map<string, BusinessRole>();
+          data.roles.forEach((r: BusinessRole) => remoteMap.set(r.id, r));
+          const merged = data.roles.slice();
+          prev.forEach((r) => {
+            if (!remoteMap.has(r.id)) merged.push(r);
           });
-        }
+          return merged;
+        });
+      }
 
-        // 7. Weekly Schedules per Branch (with automatic backup of local-only schedules to Neon DB)
-        if (Array.isArray(data.schedules)) {
-          setSchedulesByBranch((prevMap) => {
-            const nextMap: Record<string, WeeklySchedule> = { ...prevMap };
-            const remoteBranches = new Set<string>();
-
-            data.schedules.forEach((remoteSched: WeeklySchedule) => {
-              if (!remoteSched.branchId) return;
-              remoteBranches.add(remoteSched.branchId);
-              const existingLocal = prevMap[remoteSched.branchId];
-              // Prefer remote schedule if it has assignments or if local is empty
-              if (
-                (remoteSched.assignments && remoteSched.assignments.length > 0) ||
-                !existingLocal ||
-                existingLocal.assignments.length === 0
-              ) {
-                nextMap[remoteSched.branchId] = remoteSched;
-              } else if (existingLocal && existingLocal.assignments.length > 0 && remoteSched.assignments.length === 0) {
-                // Local has assignments whereas remote is empty -> push local schedule to Neon DB!
-                syncScheduleToBackend(existingLocal);
-              }
-            });
-
-            // Push any local branch schedules that do not exist on remote yet
-            Object.values(prevMap).forEach((localSched) => {
-              if (
-                localSched &&
-                localSched.branchId &&
-                localSched.assignments &&
-                localSched.assignments.length > 0 &&
-                !remoteBranches.has(localSched.branchId)
-              ) {
-                syncScheduleToBackend(localSched);
-              }
-            });
-
-            return nextMap;
+      // 4. Line Configs
+      if (Array.isArray(data.lineConfigs) && data.lineConfigs.length > 0) {
+        setLineConfigs((prev) => {
+          const remoteMap = new Map<string, LineConfig>();
+          data.lineConfigs.forEach((l: LineConfig) => remoteMap.set(`${l.branchId}_${l.lineCode}`, l));
+          const merged = data.lineConfigs.slice();
+          prev.forEach((l) => {
+            if (!remoteMap.has(`${l.branchId}_${l.lineCode}`)) merged.push(l);
           });
-        }
+          return merged;
+        });
+      }
 
-        // 8. Shift Requests
-        if (Array.isArray(data.shiftRequests)) {
-          setShiftRequests((prev) => {
-            const remoteMap = new Map<string, ShiftRequest>();
-            data.shiftRequests.forEach((sr: ShiftRequest) => remoteMap.set(sr.id, sr));
-            const merged = data.shiftRequests.slice();
-            prev.forEach((localSr) => {
-              if (!remoteMap.has(localSr.id)) {
-                merged.push(localSr);
-                shiftRequestService.create(localSr).catch(() => {});
-              }
-            });
-            return merged;
+      // 5. Line Requirements
+      if (Array.isArray(data.lineRequirements) && data.lineRequirements.length > 0) {
+        setLineRequirements((prev) => {
+          const remoteMap = new Map<string, LineRequirement>();
+          data.lineRequirements.forEach((lr: LineRequirement) =>
+            remoteMap.set(`${lr.branchId}_${lr.lineCode}_${lr.roleId}`, lr)
+          );
+          const merged = data.lineRequirements.slice();
+          prev.forEach((lr) => {
+            if (!remoteMap.has(`${lr.branchId}_${lr.lineCode}_${lr.roleId}`)) merged.push(lr);
           });
-        }
+          return merged;
+        });
+      }
 
-        // 9. Payroll OT Map
-        if (data.payrollOtMap && typeof data.payrollOtMap === 'object') {
-          setOtHoursMap((prev) => ({ ...prev, ...data.payrollOtMap }));
-        }
-
-        // 10. Audit Logs
-        if (Array.isArray(data.auditLogs) && data.auditLogs.length > 0) {
-          setAuditLogs((prev) => {
-            const remoteMap = new Map<string, AuditLog>();
-            data.auditLogs.forEach((l: AuditLog) => remoteMap.set(l.id, l));
-            const merged = data.auditLogs.slice();
-            prev.forEach((l) => {
-              if (!remoteMap.has(l.id)) merged.push(l);
-            });
-            return merged.slice(0, 150);
+      // 6. Availability Registrations (with automatic backup of local-only registrations to Neon DB)
+      if (Array.isArray(data.registrations)) {
+        setRegistrations((prev) => {
+          const remoteMap = new Map<string, AvailabilityRegistration>();
+          data.registrations.forEach((reg: AvailabilityRegistration) =>
+            remoteMap.set(`${reg.userId}_${reg.weekStartDate}`, reg)
+          );
+          const merged = data.registrations.slice();
+          prev.forEach((localReg) => {
+            const key = `${localReg.userId}_${localReg.weekStartDate}`;
+            if (!remoteMap.has(key)) {
+              merged.push(localReg);
+              availabilityService
+                .saveAvailability({
+                  userId: localReg.userId,
+                  branchId: localReg.branchId,
+                  weekStartDate: localReg.weekStartDate,
+                  slots: localReg.slots,
+                  dayCustomHours: localReg.dayCustomHours,
+                  note: localReg.note,
+                })
+                .catch(() => {});
+            }
           });
-        }
-      } catch {
-        // Backend might be booting or offline
+          return merged;
+        });
+      }
+
+      // 7. Weekly Schedules per Branch (with automatic backup of local-only schedules to Neon DB)
+      if (Array.isArray(data.schedules)) {
+        setSchedulesByBranch((prevMap) => {
+          const nextMap: Record<string, WeeklySchedule> = { ...prevMap };
+          const remoteBranches = new Set<string>();
+
+          data.schedules.forEach((remoteSched: WeeklySchedule) => {
+            if (!remoteSched.branchId) return;
+            remoteBranches.add(remoteSched.branchId);
+            const existingLocal = prevMap[remoteSched.branchId];
+            // Prefer remote schedule if it has assignments or if local is empty
+            if (
+              (remoteSched.assignments && remoteSched.assignments.length > 0) ||
+              !existingLocal ||
+              existingLocal.assignments.length === 0
+            ) {
+              nextMap[remoteSched.branchId] = remoteSched;
+            } else if (existingLocal && existingLocal.assignments.length > 0 && remoteSched.assignments.length === 0) {
+              // Local has assignments whereas remote is empty -> push local schedule to Neon DB!
+              syncScheduleToBackend(existingLocal);
+            }
+          });
+
+          // Push any local branch schedules that do not exist on remote yet
+          Object.values(prevMap).forEach((localSched) => {
+            if (
+              localSched &&
+              localSched.branchId &&
+              localSched.assignments &&
+              localSched.assignments.length > 0 &&
+              !remoteBranches.has(localSched.branchId)
+            ) {
+              syncScheduleToBackend(localSched);
+            }
+          });
+
+          return nextMap;
+        });
+      }
+
+      // 8. Shift Requests
+      if (Array.isArray(data.shiftRequests)) {
+        setShiftRequests((prev) => {
+          const remoteMap = new Map<string, ShiftRequest>();
+          data.shiftRequests.forEach((sr: ShiftRequest) => remoteMap.set(sr.id, sr));
+          const merged = data.shiftRequests.slice();
+          prev.forEach((localSr) => {
+            if (!remoteMap.has(localSr.id)) {
+              merged.push(localSr);
+              shiftRequestService.create(localSr).catch(() => {});
+            }
+          });
+          return merged;
+        });
+      }
+
+      // 9. Payroll OT Map
+      if (data.payrollOtMap && typeof data.payrollOtMap === 'object') {
+        setOtHoursMap((prev) => ({ ...prev, ...data.payrollOtMap }));
+      }
+
+      // 10. Audit Logs
+      if (Array.isArray(data.auditLogs) && data.auditLogs.length > 0) {
+        setAuditLogs((prev) => {
+          const remoteMap = new Map<string, AuditLog>();
+          data.auditLogs.forEach((l: AuditLog) => remoteMap.set(l.id, l));
+          const merged = data.auditLogs.slice();
+          prev.forEach((l) => {
+            if (!remoteMap.has(l.id)) merged.push(l);
+          });
+          return merged.slice(0, 150);
+        });
+      }
+
+      if (notify) {
+        addToast('success', 'Đã đồng bộ máy chủ', 'Dữ liệu toàn hệ thống đã được đồng bộ với Neon PostgreSQL mới nhất.');
+      }
+    } catch (err: any) {
+      if (notify) {
+        addToast('warning', 'Không thể kết nối máy chủ', `Lỗi đồng bộ: ${err?.message || 'Vui lòng kiểm tra mạng'}.`);
+      }
+    } finally {
+      setIsSyncingRemote(false);
+    }
+  }, [syncScheduleToBackend, addToast]);
+
+  // Synchronize live data on mount and whenever page becomes visible or focused
+  useEffect(() => {
+    refreshDataFromBackend(false);
+
+    const handleSync = () => {
+      if (document.visibilityState === 'visible') {
+        refreshDataFromBackend(false);
       }
     };
+    document.addEventListener('visibilitychange', handleSync);
+    window.addEventListener('focus', handleSync);
 
-    fetchInitialData();
+    // Polling tự động mỗi 25 giây để nhận cập nhật từ các thiết bị khác trong thời gian thực
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        refreshDataFromBackend(false);
+      }
+    }, 25000);
+
     return () => {
-      isMounted = false;
+      document.removeEventListener('visibilitychange', handleSync);
+      window.removeEventListener('focus', handleSync);
+      clearInterval(interval);
     };
-  }, [syncScheduleToBackend]);
+  }, [refreshDataFromBackend]);
 
   // Auth / Login session
   const loginAs = (userId: string) => {
@@ -1092,7 +1126,15 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         admin_password: bData.adminPassword,
         admin_email: bData.adminEmail,
       })
-      .catch(() => {});
+      .then((created) => {
+        if (created && created.id && created.id !== id) {
+          setBranches((prev) => prev.map((b) => (b.id === id ? { ...b, id: created.id } : b)));
+        }
+      })
+      .catch((err) => {
+        console.warn('[addBranch] Cloud sync warning:', err);
+        addToast('warning', 'Lưu tạm thời trên máy', `Không thể đồng bộ chi nhánh lên máy chủ đám mây: ${err?.message || 'Lỗi mạng'}.`);
+      });
 
     addAuditLog(
       'CREATE_BRANCH_WITH_ADMIN',
@@ -1256,7 +1298,15 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         skills: newEmp.skills,
         baseHourlyRate: newEmp.baseHourlyRate,
       })
-      .catch(() => {});
+      .then((created) => {
+        if (created && created.id && created.id !== id) {
+          setEmployees((prev) => prev.map((e) => (e.id === id ? { ...e, id: created.id } : e)));
+        }
+      })
+      .catch((err) => {
+        console.warn('[addEmployee] Cloud sync warning:', err);
+        addToast('warning', 'Lưu tạm thời trên máy', `Không thể đồng bộ nhân viên lên máy chủ đám mây: ${err?.message || 'Lỗi mạng'}.`);
+      });
   };
 
   const updateEmployee = (id: string, updates: Partial<Employee>) => {
@@ -2213,6 +2263,8 @@ export const ScheduleProvider: React.FC<{ children: ReactNode }> = ({ children }
         showSolverModal,
         closeSolverModal,
         resetToMockData,
+        refreshDataFromBackend,
+        isSyncingRemote,
         toasts,
         addToast,
         removeToast,

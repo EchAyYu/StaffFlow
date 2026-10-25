@@ -31,8 +31,12 @@ export async function syncUserSkillsSafely(client: any, userId: string, branchId
       };
       let validBranchId = branchId || null;
       if (validBranchId) {
-        const bCheck = await client.query('SELECT id FROM branches WHERE id = $1', [validBranchId]);
-        if (bCheck.rows.length === 0) validBranchId = null;
+        const bCode = validBranchId.replace(/^BR-/, '');
+        const bCheck = await client.query(
+          'SELECT id FROM branches WHERE id = $1 OR code = $2 OR code = $3',
+          [validBranchId, validBranchId, bCode]
+        );
+        validBranchId = bCheck.rows.length > 0 ? bCheck.rows[0].id : null;
       }
       await client.query(`
         INSERT INTO roles (id, branch_id, code, name, description, gender_requirement, default_hourly_rate, salary_calculation_type, is_system_default)
@@ -113,14 +117,22 @@ usersRouter.post('/', async (req, res) => {
 
       let validBranchId = targetRoleType === 'super_admin' ? null : (branchId || null);
       if (validBranchId) {
-        const bCheck = await client.query('SELECT id FROM branches WHERE id = $1', [validBranchId]);
-        if (bCheck.rows.length === 0) {
-          const bCode = validBranchId.replace(/^BR-/, '');
-          await client.query(`
+        const bCode = validBranchId.replace(/^BR-/, '');
+        const bCheck = await client.query(
+          'SELECT id FROM branches WHERE id = $1 OR code = $2 OR code = $3',
+          [validBranchId, validBranchId, bCode]
+        );
+        if (bCheck.rows.length > 0) {
+          validBranchId = bCheck.rows[0].id;
+        } else {
+          const resolvedId = validBranchId.startsWith('BR-') ? validBranchId : `BR-${bCode}`;
+          const insertB = await client.query(`
             INSERT INTO branches (id, code, name, standard_monthly_hours, max_fulltime_off_days, max_parttime_off_days)
             VALUES ($1, $2, $3, 208, 4, 8)
-            ON CONFLICT (id) DO NOTHING
-          `, [validBranchId, bCode, `Chi Nhánh ${bCode}`]);
+            ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+            RETURNING id
+          `, [resolvedId, bCode, `Chi Nhánh ${bCode}`]);
+          validBranchId = insertB.rows[0].id;
         }
       }
 
@@ -223,14 +235,22 @@ usersRouter.put('/:id', async (req, res) => {
 
       let validBranchId = targetRoleType === 'super_admin' ? null : (branchId || null);
       if (validBranchId) {
-        const bCheck = await client.query('SELECT id FROM branches WHERE id = $1', [validBranchId]);
-        if (bCheck.rows.length === 0) {
-          const bCode = validBranchId.replace(/^BR-/, '');
-          await client.query(`
+        const bCode = validBranchId.replace(/^BR-/, '');
+        const bCheck = await client.query(
+          'SELECT id FROM branches WHERE id = $1 OR code = $2 OR code = $3',
+          [validBranchId, validBranchId, bCode]
+        );
+        if (bCheck.rows.length > 0) {
+          validBranchId = bCheck.rows[0].id;
+        } else {
+          const resolvedId = validBranchId.startsWith('BR-') ? validBranchId : `BR-${bCode}`;
+          const insertB = await client.query(`
             INSERT INTO branches (id, code, name, standard_monthly_hours, max_fulltime_off_days, max_parttime_off_days)
             VALUES ($1, $2, $3, 208, 4, 8)
-            ON CONFLICT (id) DO NOTHING
-          `, [validBranchId, bCode, `Chi Nhánh ${bCode}`]);
+            ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+            RETURNING id
+          `, [resolvedId, bCode, `Chi Nhánh ${bCode}`]);
+          validBranchId = insertB.rows[0].id;
         }
       }
 

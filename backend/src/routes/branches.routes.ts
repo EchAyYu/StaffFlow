@@ -58,7 +58,7 @@ branchesRouter.post('/', async (req, res) => {
       // 1. Mã hóa mật khẩu bằng bcrypt trước khi lưu trữ
       const hashedAdminPassword = rawAdminPass ? await hashPassword(rawAdminPass) : null;
 
-      // 2. Tạo chi nhánh
+      // 2. Tạo chi nhánh (hoặc cập nhật nếu mã chi nhánh đã tồn tại, tránh lỗi 500 duplicate key)
       const query = `
         INSERT INTO branches (
           id, code, name, address, phone, standard_monthly_hours, 
@@ -66,6 +66,18 @@ branchesRouter.post('/', async (req, res) => {
           admin_name, admin_username, admin_password, admin_email
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (code) DO UPDATE
+        SET name = EXCLUDED.name,
+            address = COALESCE(EXCLUDED.address, branches.address),
+            phone = COALESCE(EXCLUDED.phone, branches.phone),
+            standard_monthly_hours = EXCLUDED.standard_monthly_hours,
+            max_fulltime_off_days = EXCLUDED.max_fulltime_off_days,
+            max_parttime_off_days = EXCLUDED.max_parttime_off_days,
+            admin_name = COALESCE(EXCLUDED.admin_name, branches.admin_name),
+            admin_username = COALESCE(EXCLUDED.admin_username, branches.admin_username),
+            admin_password = COALESCE(EXCLUDED.admin_password, branches.admin_password),
+            admin_email = COALESCE(EXCLUDED.admin_email, branches.admin_email),
+            updated_at = CURRENT_TIMESTAMP
         RETURNING *
       `;
       const branchRes = await client.query(query, [
@@ -82,6 +94,8 @@ branchesRouter.post('/', async (req, res) => {
         hashedAdminPassword,
         admin_email,
       ]);
+
+      const finalBranchId = branchRes.rows[0].id;
 
       // 3. Tự động cấp tài khoản Admin Chi Nhánh vào bảng users với mật khẩu bcrypt
       if (admin_username && hashedAdminPassword) {
@@ -102,7 +116,7 @@ branchesRouter.post('/', async (req, res) => {
               phone = EXCLUDED.phone
         `, [
           adminUserId,
-          branchId,
+          finalBranchId,
           `ADM-${code}`,
           admin_name || `Admin ${name}`,
           finalEmail,
@@ -125,7 +139,7 @@ branchesRouter.post('/', async (req, res) => {
           INSERT INTO roles (id, branch_id, code, name, description, gender_requirement, default_hourly_rate, salary_calculation_type, is_system_default)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
           ON CONFLICT (id) DO NOTHING
-        `, [r.id, branchId, r.code, r.name, r.desc, r.gender, r.rate, r.calc]);
+        `, [r.id, finalBranchId, r.code, r.name, r.desc, r.gender, r.rate, r.calc]);
       }
 
       // 3.2 Khởi tạo 3 Line làm việc chuẩn (O, M, D) cho chi nhánh
@@ -139,7 +153,7 @@ branchesRouter.post('/', async (req, res) => {
           INSERT INTO line_configs (id, branch_id, line_code, line_name, start_time, end_time, duration_hours, description)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
           ON CONFLICT (branch_id, line_code) DO NOTHING
-        `, [l.id, branchId, l.lineCode, l.lineName, l.startTime, l.endTime, l.durationHours, l.desc]);
+        `, [l.id, finalBranchId, l.lineCode, l.lineName, l.startTime, l.endTime, l.durationHours, l.desc]);
       }
 
       // 3.3 Khởi tạo định mức nhân sự ban đầu theo Line cho chi nhánh
@@ -161,7 +175,7 @@ branchesRouter.post('/', async (req, res) => {
           INSERT INTO line_requirements (id, branch_id, line_code, role_id, headcount_required)
           VALUES ($1, $2, $3, $4, $5)
           ON CONFLICT (branch_id, line_code, role_id) DO NOTHING
-        `, [reqItem.id, branchId, reqItem.lineCode, reqItem.roleId, reqItem.count]);
+        `, [reqItem.id, finalBranchId, reqItem.lineCode, reqItem.roleId, reqItem.count]);
       }
 
       // 4. Ghi nhận Audit Log bất biến của Admin Tổng
@@ -169,8 +183,8 @@ branchesRouter.post('/', async (req, res) => {
         INSERT INTO audit_logs (branch_id, user_id, action_type, entity_type, entity_id, details)
         VALUES ($1, NULL, 'CREATE_BRANCH_AND_ADMIN', 'BRANCH', $2, $3)
       `, [
-        branchId,
-        branchId,
+        finalBranchId,
+        finalBranchId,
         JSON.stringify({
           code,
           name,

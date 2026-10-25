@@ -64,19 +64,28 @@ schedulesRouter.post('/', async (req, res) => {
       await client.query('BEGIN');
 
       // Đảm bảo branchId tồn tại trong bảng branches để không lỗi khoá ngoại
-      const bCheck = await client.query('SELECT id FROM branches WHERE id = $1', [branchId]);
-      if (bCheck.rows.length === 0) {
-        const bCode = branchId.replace(/^BR-/, '');
-        await client.query(`
+      let targetBranchId = branchId;
+      const bCode = branchId.replace(/^BR-/, '');
+      const bCheck = await client.query(
+        'SELECT id FROM branches WHERE id = $1 OR code = $2 OR code = $3',
+        [branchId, branchId, bCode]
+      );
+      if (bCheck.rows.length > 0) {
+        targetBranchId = bCheck.rows[0].id;
+      } else {
+        const resolvedId = branchId.startsWith('BR-') ? branchId : `BR-${bCode}`;
+        const insertB = await client.query(`
           INSERT INTO branches (id, code, name, standard_monthly_hours, max_fulltime_off_days, max_parttime_off_days)
           VALUES ($1, $2, $3, 208, 4, 8)
-          ON CONFLICT (id) DO NOTHING
-        `, [branchId, bCode, `Chi Nhánh ${bCode}`]);
+          ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+          RETURNING id
+        `, [resolvedId, bCode, `Chi Nhánh ${bCode}`]);
+        targetBranchId = insertB.rows[0].id;
       }
 
       const targetWeekStart = weekStartDate || '2026-10-19';
       const targetWeekEnd = weekEndDate || '2026-10-25';
-      const schedId = id || `SCH-${branchId}-${targetWeekStart}`;
+      const schedId = id || `SCH-${targetBranchId}-${targetWeekStart}`;
 
       const schedRes = await client.query(`
         INSERT INTO schedules (
@@ -95,7 +104,7 @@ schedulesRouter.post('/', async (req, res) => {
         RETURNING *
       `, [
         schedId,
-        branchId,
+        targetBranchId,
         targetWeekStart,
         targetWeekEnd,
         status || 'draft',
@@ -132,7 +141,7 @@ schedulesRouter.post('/', async (req, res) => {
             dbId,
             slotId,
             finalScheduleId,
-            branchId,
+            targetBranchId,
             a.day || a.day_of_week,
             a.lineCode || a.line_code,
             a.roleId || a.role_id,
